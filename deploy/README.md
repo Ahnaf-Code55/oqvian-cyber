@@ -34,10 +34,14 @@ the machine.
    bridge (`mcp/toolcall_proxy.py`, `oqvian-proxy.service`) owns the protocol —
    it renders the schemas, parses the model's `<tool_call>` itself, and retries a
    genuinely empty turn. The harness provider points at the bridge, not Ollama
-   directly. Because the bridge buffers a tool turn (upstream `stream=False`), its
-   patience must exceed the harness's: the unit sets `OQVIAN_PROXY_TIMEOUT=3600`
-   and `streamIdleTimeoutMs` is `3600000`, so a CPU-only box whose turn takes
-   ~25 min still completes. A GPU box finishes in seconds and never notices.
+   directly. The bridge also **answers before it calls the model**: it sends the
+   SSE response headers immediately and then an SSE comment keepalive every 20 s
+   while the turn is buffered. That is what lets a CPU-only box whose turn takes
+   ~25 min complete — the client's own request timeout stops applying once the
+   headers land, and the harness's idle watchdog restarts on every chunk.
+   `OQVIAN_PROXY_TIMEOUT=3600` sets how long the bridge itself waits on Ollama;
+   keep it above `streamIdleTimeoutMs` (`3600000`). A GPU box finishes in seconds
+   and never notices.
 8. **The prompt fits the window.** dsh discovers agent skills from
    `~/.dsh/skills`, `~/.agents/skills` and the project, and renders every one into
    an `<available_skills>` system-reminder. On a host with a few hundred skills

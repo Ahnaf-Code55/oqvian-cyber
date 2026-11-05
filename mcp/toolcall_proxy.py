@@ -25,7 +25,9 @@ It does two jobs, and is otherwise transparent:
 
 Requests that carry ``tools`` are buffered, re-issued and (if needed) rewritten,
 for streaming and non-streaming alike; everything else is a byte-for-byte
-passthrough. Stdlib only. Configuration (env):
+passthrough. A streaming tool turn gets its response headers, and then an SSE
+comment keepalive every ``OQVIAN_PROXY_KEEPALIVE`` seconds, *before* the upstream
+call is made -- see the ``_KEEPALIVE`` comment. Stdlib only. Configuration (env):
     OQVIAN_PROXY_UPSTREAM      default http://127.0.0.1:11434   (Ollama)
     OQVIAN_PROXY_UPSTREAM_API  chat (default, native /api/chat) | v1 (OpenAI shim)
     OQVIAN_PROXY_HOST          default 127.0.0.1
@@ -33,6 +35,7 @@ passthrough. Stdlib only. Configuration (env):
     OQVIAN_PROXY_RETRIES       default 3
     OQVIAN_PROXY_TIMEOUT       default 1800  upstream seconds; raise it (e.g. 3600)
                                on a CPU-only box where one turn can exceed 30 min
+    OQVIAN_PROXY_KEEPALIVE     default 20    SSE keepalive seconds
 
 Run:  python3 mcp/toolcall_proxy.py
 """
@@ -42,6 +45,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -74,6 +78,15 @@ _TOOLCALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 # streamIdleTimeoutMs, or the bridge kills a turn the client is still waiting on.
 _TIMEOUT = int(os.environ.get("OQVIAN_PROXY_TIMEOUT", "1800"))  # seconds
 _RETRIES = int(os.environ.get("OQVIAN_PROXY_RETRIES", "3"))  # empty-completion retries
+# While a tool turn is buffered upstream, a streaming client gets SSE comment
+# keepalives this often. Two timeouts make this necessary. The OpenAI SDK clears
+# its per-request timeout as soon as response *headers* arrive (client.js
+# ``fetchWithTimeout`` clears the timer in ``finally``), so the headers must be
+# sent before the upstream wait -- otherwise a turn longer than the SDK's default
+# (~5 min) dies as "Request timed out." no matter how large streamIdleTimeoutMs
+# is. And pi-ai's idle watchdog restarts on every chunk, so a comment every N
+# seconds keeps a 25-minute CPU turn alive under a 60-minute idle window.
+_KEEPALIVE = max(1, int(os.environ.get("OQVIAN_PROXY_KEEPALIVE", "20")))  # seconds
 
 
 # --------------------------------------------------------------------------- #
@@ -360,6 +373,15 @@ def _ollama_response(resp, model):
 _HOP = {"host", "content-length", "accept-encoding", "connection", "transfer-encoding"}
 
 
+class _Upstream(Exception):
+    """The upstream call failed and the client has not been answered yet."""
+
+    def __init__(self, payload: bytes, status: int = 502):
+        super().__init__(status)
+        self.payload = payload
+        self.status = status
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "oqvian-toolcall-bridge"
@@ -441,6 +463,27 @@ class Handler(BaseHTTPRequestHandler):
             f"stream={want_stream}\n"
         )
 
+        if want_stream:
+            # Answer *before* doing the work: the client's request timeout starts
+            # when it sends, and the OpenAI SDK clears it as soon as the response
+            # headers land. Waiting for the upstream first (25 min on CPU) is what
+            # produced "Request timed out." regardless of streamIdleTimeoutMs.
+            self._stream_buffered(req, hdrs, names)
+            return
+
+        try:
+            resp, calls, leftover = self._run_upstream(req, hdrs, names)
+        except _Upstream as e:
+            self._send_json(raw_body=e.payload, status=e.status)
+            return
+        self._emit_nonstream(resp, calls, leftover)
+
+    def _run_upstream(self, req, hdrs, names):
+        """Buffer one tool turn upstream. Returns ``(resp, calls, leftover)``.
+
+        Raises ``_Upstream`` when the upstream itself failed, so each caller can
+        report it in its own wire form (a JSON body, or an SSE chunk).
+        """
         up_req = dict(req)
         up_req["stream"] = False
         h = dict(hdrs)
@@ -488,15 +531,11 @@ class Handler(BaseHTTPRequestHandler):
                 up = urlreq.urlopen(r, timeout=_TIMEOUT)
                 raw_resp = json.loads(up.read())
             except urlerr.HTTPError as e:
-                payload = e.read().decode(errors="replace")
-                self._send_json(raw_body=payload.encode(), status=e.code)
-                return
-            except Exception as e:  # upstream unreachable
-                self._send_json(
-                    raw_body=json.dumps({"error": {"message": str(e)}}).encode(),
-                    status=502,
+                raise _Upstream(e.read().decode(errors="replace").encode(), e.code)
+            except Exception as e:  # upstream unreachable / timed out
+                raise _Upstream(
+                    json.dumps({"error": {"message": str(e)}}).encode(), 502
                 )
-                return
 
             resp = (
                 raw_resp
@@ -504,8 +543,7 @@ class Handler(BaseHTTPRequestHandler):
                 else _ollama_response(raw_resp, req.get("model"))
             )
             if resp.get("error"):  # upstream refused the request outright
-                self._send_json(json.dumps(resp).encode(), status=502)
-                return
+                raise _Upstream(json.dumps(resp).encode(), 502)
 
             calls, leftover = _parse(resp, names)
             sys.stderr.write(
@@ -544,10 +582,62 @@ class Handler(BaseHTTPRequestHandler):
                 "[toolcall-proxy] WARNING: upstream returned empty after "
                 f"{attempts} attempt(s)\n"
             )
-        if want_stream:
-            self._emit_stream(resp, calls, leftover)
-        else:
-            self._emit_nonstream(resp, calls, leftover)
+        return resp, calls, leftover
+
+    def _stream_buffered(self, req, hdrs, names):
+        """Stream a buffered tool turn without letting the client time out.
+
+        The headers go out immediately; an SSE comment every ``_KEEPALIVE``
+        seconds keeps the socket warm while the upstream evaluates a long prompt.
+        An SSE comment (``: ...``) is ignored by every spec-compliant parser, so
+        it costs the client nothing.
+        """
+        self._sse_headers()
+        box: dict = {}
+
+        def work():
+            try:
+                box["ok"] = self._run_upstream(req, hdrs, names)
+            except _Upstream as e:
+                box["err"] = e
+            except Exception as e:  # never let the worker die without a trace
+                box["err"] = _Upstream(
+                    json.dumps({"error": {"message": str(e)}}).encode(), 502
+                )
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        try:
+            while t.is_alive():
+                t.join(_KEEPALIVE)
+                if t.is_alive():
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client gave up (cancelled turn, Ctrl-C). Stop feeding a dead socket;
+            # the worker is a daemon thread and is reaped with the process.
+            return
+
+        if "ok" in box:
+            resp, calls, leftover = box["ok"]
+            try:
+                self._emit_stream_chunks(resp, calls, leftover)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+
+        err = box.get("err")
+        msg = ""
+        try:
+            msg = (json.loads(err.payload.decode(errors="replace")).get("error") or {}).get("message", "")
+        except Exception:
+            msg = ""
+        msg = msg or "bridge could not reach the model"
+        sys.stderr.write(f"[toolcall-proxy] streaming upstream failed: {msg}\n")
+        try:
+            self._emit_stream_error(msg)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     # -- emitters ---------------------------------------------------------- #
     def _send_json(self, raw_body, status=200):
@@ -569,13 +659,16 @@ class Handler(BaseHTTPRequestHandler):
             choice["finish_reason"] = "tool_calls"
         self._send_json(json.dumps(resp).encode())
 
-    def _emit_stream(self, resp, calls, leftover):
+    def _sse_headers(self):
+        """Open the event stream before the upstream call is made."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
+        self.wfile.flush()
 
+    def _emit_stream_chunks(self, resp, calls, leftover):
         cid = resp.get("id", "chatcmpl-proxy")
         model = resp.get("model", "")
         created = resp.get("created", 0)
@@ -602,6 +695,31 @@ class Handler(BaseHTTPRequestHandler):
             if leftover:
                 send({"content": leftover})
             send({}, finish)
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+    def _emit_stream_error(self, message):
+        """Close out an already-open stream with an error as assistant text.
+
+        The headers are long gone by now, so the status cannot be changed; a text
+        delta plus ``stop`` is what a stream parser can still consume cleanly.
+        """
+        cid = "chatcmpl-proxy"
+        created = int(time.time())
+
+        def send(delta, finish_reason=None):
+            chunk = {
+                "id": cid,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": "",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+            }
+            self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+            self.wfile.flush()
+
+        send({"role": "assistant", "content": f"[bridge error] {message}"})
+        send({}, "stop")
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 

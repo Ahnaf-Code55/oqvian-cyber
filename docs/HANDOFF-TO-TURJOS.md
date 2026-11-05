@@ -149,8 +149,13 @@ Ollama listens on `127.0.0.1:11434`. The harness provider deliberately points at
 - Ollama's own tool parser intermittently **drops a valid tool call** and returns
   an empty turn. The bridge owns the protocol, renders the schemas, parses the
   model's `<tool_call>` itself, and retries a genuinely empty turn.
-- It buffers each tool turn, so its patience has to exceed the harness's. The
-  service sets `OQVIAN_PROXY_TIMEOUT=3600`; the harness idle window is 60 min.
+- It **answers streaming clients before it calls the model**. It sends the SSE
+  response headers immediately and then an SSE comment keepalive every 20 s while
+  the model works. That matters on CPU: an OpenAI client clears its per-request
+  timeout the moment the headers arrive, and the harness restarts its idle
+  watchdog on every chunk — so a 25-minute turn stays alive instead of dying at
+  the client's default ~5 minutes. `OQVIAN_PROXY_TIMEOUT=3600` sets how long the
+  bridge will wait on Ollama itself.
 
 If the bridge is down, `dsh` cannot reach the provider. Bring it up:
 
@@ -211,13 +216,18 @@ that file plus the scope file is your rules-of-engagement evidence. Do not delet
 it during an engagement.
 
 **2. CPU-only is genuinely slow — don't mistake it for a hang.** At ~6 tok/s a
-~9k-token agent turn is ~25 minutes; the timeouts in the harness and bridge are
-sized for that (60 min). Watch progress rather than kill it:
+~9k-token agent turn is ~25 minutes. The bridge keeps the connection warm for the
+whole of it (headers + a keepalive every 20 s), so the client's own request
+timeout cannot fire; watch progress rather than kill it:
 
 ```bash
 journalctl --user -u oqvian-proxy.service -n 20   # look for a "tool turn:" line
 ollama ps                                         # PROCESSOR: GPU vs CPU
 ```
+
+If you are watching the bridge log, `tool turn:` appears once per attempt and the
+matching `attempt N/M: <seconds>` line appears when that attempt finishes — a gap
+between them is the model thinking, not a stall.
 
 A GPU box finishes the same turn in seconds to a couple of minutes.
 
@@ -255,7 +265,8 @@ bash install.sh
 | Model answers, never calls a tool | `.Tools` template missing | `bash models/build-models.sh`, then check `ollama show oqvian-cyber-control-full-unlocked-v1.1 --template \| grep -c .Tools` = 3 |
 | `PI_AI_ERROR: No API key for provider: ollama-local` / `MISSING_CREDENTIAL` | provider block edited or an `apiKeyEnv:` added | re-run `python3 scripts/setup_harness.py` |
 | `dsh` can't reach provider / connection refused on 11435 | bridge not running | start `oqvian-proxy.service` (§6) |
-| `dsh: TIMEOUT: Request timed out` on a CPU-only box | a turn took longer than the bridge timeout | bridge sets `OQVIAN_PROXY_TIMEOUT=3600`; keep it above the harness idle window |
+| `dsh: TIMEOUT: Request timed out` on a CPU-only box | the bridge sent no response headers until the model finished, so the client's own request timeout fired first | update `mcp/toolcall_proxy.py` (it now sends headers + a 20 s keepalive before calling the model); if it still happens, raise `OQVIAN_PROXY_TIMEOUT` on the service |
+| `dsh: TIMEOUT: pi-ai stream idle timeout after 300000ms` | `streamIdleTimeoutMs` not applied to the provider block | re-run `python3 scripts/setup_harness.py`; the provider block in `~/.dsh/settings.yaml` is the only place that field is read |
 | First turn hangs for tens of minutes, `/api/chat` 500s | prompt bigger than the model's context — usually a host skill catalog | re-run `scripts/setup_harness.py` (disables `skill-filesystem` + `tool-skill`) |
 | Every network tool says `BLOCKED` | target not in scope | add it to `scope.json` — do not switch mode to `open` |
 | Tool call denied / cancelled instantly | approval preset `ask` in a non-interactive run | use `oqvian-cli` (auto-approve) or the web UI (prompts) |

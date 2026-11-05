@@ -80,14 +80,17 @@ Sources: `models/Modelfile.unlocked` (persona) + `models/qwen-tools.template`
 
 ---
 
-## 3. The MCP surface — 5 tools, 22 operations
+## 3. The MCP surface — 5 tools
 
-The model sees exactly five tools. Internally there are 22 functions dispatched
-through `action` / `tool` enums. **If you rename or add operations, update the
-Modelfiles in the same commit** — stale names in the system prompt are how the
-model starts calling things that do not exist. (This bug already bit once:
-an early Modelfile referenced `rag_search`, `run_tool`, `atomic_lookup`, `dns_enum`,
-none of which are in the 5-tool surface.)
+The model sees exactly five tools (`@mcp.tool()` in `mcp/server.py` appears five
+times: `kb`, `recon`, `execute`, `governance`, `transform`). Three of them carry a
+named `action` enum — `kb` 9, `recon` 8, `governance` 2 — while `execute`
+dispatches by installed-tool name (~40 tools) and `transform` offers 10 codecs.
+**If you rename or add operations, update the Modelfiles in the same commit** —
+stale names in the system prompt are how the model starts calling things that do
+not exist. (This bug already bit once: an early Modelfile referenced
+`rag_search`, `run_tool`, `atomic_lookup`, `dns_enum`, none of which are in the
+5-tool surface.)
 
 `tools.*` names in the harness are `mcp__oqvian__<tool>`.
 
@@ -166,9 +169,9 @@ llm-pi-ai:
       baseURL: http://127.0.0.1:11435/v1   # the tool-call bridge, not Ollama
       headers:
         Authorization: Bearer ollama      # pi-ai refuses credential-less providers
-      streamIdleTimeoutMs: 1800000          # 30 min — THE CPU FIX, see below
-      timeoutMs: 3600000                    # 60 min
-      models: …five oqvian entries…
+      streamIdleTimeoutMs: 3600000          # idle watchdog — see §5
+      timeoutMs: 7200000                    # SDK request timeout — see §5
+      models: …one oqvian entry (single unlocked model)…
 ```
 
 `baseURL` points at the **tool-call bridge** (`mcp/toolcall_proxy.py`), which
@@ -184,11 +187,18 @@ Two non-obvious facts:
 - **The static bearer token is not a leak or a placeholder.** pi-ai requires a
   credential to exist; Ollama ignores auth. It exists so the CISO never has to
   create an API key. `baseURL` must keep the `/v1` suffix.
-- **`timeoutMs` is in the schema but is never read** by `dsh-llm-pi-ai`. It is
-  harmless noise. `streamIdleTimeoutMs` is the one that matters, and it is read
-  at line ~1005 of `node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js` as
-  `source.streamIdleTimeoutMs ?? 3e5`. The field was confirmed present and
-  parsed (an invalid string value kills the adapter; a numeric value survives).
+- **There are two independent timeouts, and conflating them is the third most
+  common way to lose a day.** Both are read from the provider block:
+  - `streamIdleTimeoutMs` — the harness's own stream **idle watchdog**. Read at
+    `dsh-llm-pi-ai/lib/index.js:1717`, armed at `:1718`, and it is what fires.
+    Its message is `pi-ai stream idle timeout after <ms>ms`.
+  - `timeoutMs` — passed straight through to the OpenAI SDK as the client's
+    per-request `timeout` (`profileOptions` at `:1538`/`:1739` →
+    `@earendil-works/pi-ai/dist/api/openai-completions.js:136`). Its message is
+    the SDK's `Request timed out.` (`openai/core/error.js`), which is a *different*
+    failure and needs a *different* fix. If unset, the SDK default is
+    `OpenAI.DEFAULT_TIMEOUT = 600000`.
+  Both are honoured; neither is decorative. See §5 for which one bit us and why.
 
 ### Profiles
 
@@ -217,25 +227,52 @@ built for it. "Upgrading" is the third most common way to break the stack.
 
 ---
 
-## 5. The timeout, and what it actually is
+## 5. The two timeouts, and which one actually bit us
 
-The harness has a stream **idle** watchdog (`idleWatchdog` in
-`@deepseek-ai/dsh-timeout`, wired in at `dsh-llm-pi-ai/lib/index.js:1718`). It
-kills a request if no chunk arrives for `streamIdleTimeoutMs`.
+There are **two** independent clocks on every turn. Raising the wrong one does
+nothing, which is exactly how a day disappears.
 
-The default is **300,000 ms**. A CPU-only box spends longer than that evaluating
-*the prompt* before the first token exists — measured prompt eval is ~543 s for
-a 1,049-token context at ~2 tok/s — so the default fires during prompt eval, not
-generation. GPU hardware never sees this because prompt eval takes seconds.
+| | Field | Message it produces | Enforced by |
+|---|---|---|---|
+| Idle watchdog | `streamIdleTimeoutMs` | `pi-ai stream idle timeout after <ms>ms` | `dsh-llm-pi-ai`, `index.js:1717-1718` |
+| Request timeout | `timeoutMs` | `Request timed out.` | OpenAI SDK, `openai/core/error.js` |
 
-Fix (`scripts/setup_harness.py`): `streamIdleTimeoutMs: 1800000`,
-`timeoutMs: 3600000`.
+Both come from the **provider block in `~/.dsh/settings.yaml`**. `profileOptions`
+(`index.js:1538`, applied at `:1739`) copies both into the pi-ai call; the OpenAI
+adapter forwards `timeoutMs` to the SDK as the per-request `timeout`
+(`@earendil-works/pi-ai/dist/api/openai-completions.js:136`), defaulting to
+`OpenAI.DEFAULT_TIMEOUT = 600000` when unset.
 
-**What this does not fix.** Once the timeout is raised, a CPU run can still take
->20 minutes end-to-end (prompt eval + retries), and on CPU the model may emit
-plain text instead of a tool call while it is deciding. That is model behaviour,
-not a broken install — judge the e2e check on GPU hardware. Do not respond to a
-slow CPU run by raising the timeout further; 30 min idle is already generous.
+**The idle watchdog is real and is honoured.** Proven empirically rather than
+inferred: with `streamIdleTimeoutMs: 20000` the harness died at **20,215 ms** with
+`pi-ai stream idle timeout after 20000ms`, then retried at 20,255 / 40,797 /
+61,746 / 83,776 / 108,162 / 135,909 ms. So the setting is read, and it is read
+from the provider block. (An earlier version of this file blamed the ~300 s
+failure on this watchdog. That was wrong.)
+
+**What actually killed every CPU turn was the *other* clock.** `Request timed
+out.` is the OpenAI SDK's `APIConnectionTimeoutError`, not pi-ai's message. The
+SDK starts its timer when the request is sent and **clears it in `finally` the
+moment the response headers arrive** (`openai/client.js`, `fetchWithTimeout`).
+The bridge buffered each tool turn upstream (`stream=False`) and sent the client
+*nothing* until Ollama finished — ~25 min on this box. So the SDK fired first,
+and no value of `streamIdleTimeoutMs` could ever have helped.
+
+**The fix lives in the bridge, not in the harness** (`mcp/toolcall_proxy.py`):
+for a streaming tool turn it now sends the SSE response headers immediately and
+then an SSE comment (`: keepalive`) every `OQVIAN_PROXY_KEEPALIVE` (default 20 s)
+while the upstream works. Headers satisfy the SDK timer; each comment refreshes
+the idle watchdog. Verified against a stub upstream slow by 8 s: **time to
+headers 0.00 s**, 4 keepalives, tool call intact, `finish_reason: tool_calls`.
+`OQVIAN_PROXY_TIMEOUT` is now only the bridge's patience with Ollama itself.
+
+**What is still true.** A CPU turn takes 30–80 min (prompt eval dominates: the
+29 rendered tool schemas alone are ~33 KB, ~10k tokens, re-read every turn) and
+the model may emit plain text instead of a tool call while it decides. That is
+model behaviour on slow hardware, not a broken install. Do not "fix" it by
+raising timeouts again — the current values (`streamIdleTimeoutMs: 3600000`,
+`timeoutMs: 7200000`) are already generous. Judge the e2e check on the target
+machine.
 
 **Verified numbers from this box** (i7-5557U, no AVX-512, CPU-only):
 prompt 2.0 tok/s, generation 1.5 tok/s. Target hardware: 12–25 tok/s with
@@ -251,7 +288,7 @@ machine, step by step, with expected output and a failure table. Order matters:
 
 1. `scripts/install-release-assets.sh` — downloads the built models and the
    harness cache (**before** `install.sh`).
-2. `install.sh` — 8 stages, idempotent, `--status` reports 9 components.
+2. `install.sh` — 8 stages, idempotent, `--status` reports 10 components.
 3. `python scripts/setup_harness.py` — profiles + provider + scope.
 
 Details worth knowing if you modify this:
@@ -291,7 +328,7 @@ release **assets**, never in git.
 | Renaming an MCP operation | The Modelfile now names tools that do not exist | Update `models/Modelfile.unlocked` in the same commit |
 | `DSH_PERMISSION_MODE=danger-full-access` on the web UI | UI stops prompting for tool calls | Only `oqvian-cli` sets it; web keeps `ask` |
 | `modelRoutes: [ollama-local]` under `agent-default-model` | Already in `settings.yaml`; harmless but redundant | Leave it, or remove it — do not "fix" anything else to chase it |
-| `timeoutMs` under the provider | In the schema, never read | Ignore; `streamIdleTimeoutMs` is the lever |
+| `timeoutMs` under the provider | It **is** read — forwarded to the SDK as the per-request `timeout`; the old "never read" note here was wrong | Keep it **above** `streamIdleTimeoutMs` (7200000 vs 3600000). It is the SDK clock, not the idle watchdog |
 | Building a multi-GB artefact in `/tmp` | `/tmp` here is a 7.8 GB tmpfs — `No space left on device`. Build in `~/.cache` | — |
 | Overwriting a running bash script in place | bash re-reads by byte offset → `syntax error near unexpected token` | Write to a new file, then `mv` |
 | `npm --os=win32 --cpu=x64 …` | The supported way to prime a cross-platform cache | Verify with a real `--offline` install |
@@ -323,7 +360,7 @@ release **assets**, never in git.
 ```bash
 ollama show <m> --template | grep -c '.Tools'    # 3 on the OQVIAN model
 .venv/bin/python mcp/smoke_test.py               # 19/19
-bash install.sh --status                          # 9 components "yes"
+bash install.sh --status                          # 10 components "yes"
 cat part-* | sha256sum                            # matches the source tar
 bash models/build-models.sh                       # early-exits, verifies
 ```
@@ -365,8 +402,10 @@ from. The `.Tools` count is the proof that matters.
 4. Touch `.Tools` template via `models/qwen-tools.template` only — never by
    hand-editing a Modelfile in the repo, because the release models already
    have it baked in and a hand-edit does not reach the target machine.
-5. `streamIdleTimeoutMs` is the CPU fix. Do not lower it; do not "tune" it per
-   hardware profile.
+5. Both timeouts in §5 are load-bearing: `streamIdleTimeoutMs` (idle watchdog)
+   and `timeoutMs` (SDK request timeout). Do not lower either, and do not "tune"
+   them per hardware profile. If a CPU turn dies before the model answers, check
+   the **bridge** first — the fix for that lives in `mcp/toolcall_proxy.py`.
 6. Never set `"mode": "open"` in a shipped scope file. The scope file is not in
    the repo by design.
 7. Run `ollama show <m> --template | grep -c '.Tools'` after any model change.
