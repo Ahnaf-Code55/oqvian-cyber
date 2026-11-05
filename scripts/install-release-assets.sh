@@ -32,7 +32,7 @@ fi
 # Fallback for a download-only copy with no .git directory.
 case "$REPO" in
   */*) : ;;
-  *)   REPO="TRahman2414/oqvian-cyber" ;;
+  *)   REPO="Ahnaf-Code55/oqvian-cyber" ;;
 esac
 TAG="v1.0.0"
 DO_MODELS=1

@@ -68,7 +68,7 @@ The repository is **private**. The user must supply a token with `repo` scope:
 ```bash
 export GH_TOKEN=<ask the user>
 gh auth login --with-token <<< "$GH_TOKEN" || true
-git clone "https://${GH_TOKEN}@github.com/TRahman2414/oqvian-cyber.git" ~/oqvian-cyber
+git clone "https://${GH_TOKEN}@github.com/Ahnaf-Code55/oqvian-cyber.git" ~/oqvian-cyber
 cd ~/oqvian-cyber
 ```
 
@@ -154,7 +154,7 @@ ollama --version
 
 ```powershell
 $env:GH_TOKEN = "<ask the user>"
-git clone "https://$env:GH_TOKEN@github.com/TRahman2414/oqvian-cyber.git" "$HOME\oqvian-cyber"
+git clone "https://$env:GH_TOKEN@github.com/Ahnaf-Code55/oqvian-cyber.git" "$HOME\oqvian-cyber"
 cd "$HOME\oqvian-cyber"
 ```
 
@@ -166,14 +166,14 @@ and a primed npm cache. No HuggingFace, no npm registry.
 ```powershell
 $Rel = "$HOME\oq-rel"
 New-Item -ItemType Directory -Force -Path $Rel | Out-Null
-gh release download v1.0.0 --repo TRahman2414/oqvian-cyber --dir $Rel --clobber
+gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber --dir $Rel --clobber
 ```
 
 If `gh` is not installed, use `git`'s credential and the API instead:
 
 ```powershell
 $h = @{ Authorization = "Bearer $env:GH_TOKEN" }
-Invoke-RestMethod "https://api.github.com/repos/TRahman2414/oqvian-cyber/releases/tags/v1.0.0" -Headers $h |
+Invoke-RestMethod "https://api.github.com/repos/Ahnaf-Code55/oqvian-cyber/releases/tags/v1.0.0" -Headers $h |
   Select-Object -ExpandProperty assets |
   ForEach-Object {
     Invoke-WebRequest $_.url -Headers ($h + @{ Accept = "application/octet-stream" }) -OutFile "$Rel\$($_.name)"
@@ -329,18 +329,8 @@ oqvian-cli "Call mcp__oqvian__kb with action=attack and query=T1059, then state 
 
 This last one is the only test that proves the whole chain:
 harness → MCP → model → tool → knowledge base. On the target hardware it takes
-30–120 seconds. On a CPU-only machine it can take well over 20 minutes — prompt
-evaluation alone is ~9 minutes at 2 tok/s for a ~1,000-token context — and the
-model may emit **plain text instead of a tool call** while working out what to
-do. That is a model behaviour, not a broken install: retry once, and if the
-audit log still has no `kb` line after two attempts on CPU hardware, record it
-under §13 point 5 and move on. Judge it properly on the GPU machine.
-
-**Do not confuse this with a timeout.** `streamIdleTimeoutMs: 1800000` is
-already written by `setup_harness.py`; if you see `pi-ai stream idle timeout
-after 300000ms`, the setting did not land — re-run
-`python scripts/setup_harness.py` and check `~/.dsh/settings.yaml` before
-changing anything else.
+30–120 seconds. On a CPU-only machine it can take 20 minutes — that is normal,
+not a hang. Do not kill it before 25 minutes.
 
 ### 6.1 Prove the tool call reached the audit log
 
@@ -421,7 +411,7 @@ cosmetics around that.
 | `MISSING_CREDENTIAL` | same, other variant — someone added `apiKeyEnv` | Delete the `apiKeyEnv:` line under `ollama-local` |
 | Model answers, never calls a tool | `.Tools` template missing — usually an upstream pull overwrote the release model | Re-extract the release models (§2.3/§3.3), then re-check §4 |
 | Tool call is denied / cancelled instantly | approval preset `ask` in a non-interactive run | Use `oqvian-cli` (sets auto-approve) or the web UI (prompts) |
-| `stream idle timeout after 300000ms` | `setup_harness.py` was not re-run after the timeout fix, or the value was overwritten | Re-run `python scripts/setup_harness.py`, then confirm `streamIdleTimeoutMs: 1800000` sits under `ollama-local` in `~/.dsh/settings.yaml`. Do not hand-edit to `900000` — 15 min is not enough for a CPU prompt eval |
+| `stream idle timeout after 300000ms` | CPU generation is slower than the harness idle timeout | Add `streamIdleTimeoutMs: 900000` under `ollama-local` in `~/.dsh/settings.yaml` |
 | Every network tool says `BLOCKED` | target not in scope file | Add it to `scope.json` — do not switch mode to `open` |
 | `ollama pull` fails | no route to HuggingFace | Use the release asset, §12.1 |
 | Index build seems hung | 10,932 passages, ~9 min on the target CPU | Wait. Check `.venv/bin/python ingest.py` progress, do not restart |

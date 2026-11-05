@@ -43,7 +43,7 @@ HuggingFace pull and the npm install.
 
 ```bash
 gh auth login
-gh repo clone TRahman2414/oqvian-cyber ~/oqvian-cyber
+gh repo clone Ahnaf-Code55/oqvian-cyber ~/oqvian-cyber
 cd ~/oqvian-cyber
 bash scripts/install-release-assets.sh     # models + harness, no network beyond GitHub
 ```
@@ -74,7 +74,7 @@ The release assets are also how you provision a machine with no route out. On a
 connected machine:
 
 ```bash
-gh release download v1.0.0 --repo TRahman2414/oqvian-cyber -D ./oq-rel
+gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel
 ```
 
 Carry `oq-rel/` over on a USB stick, then on the target:
