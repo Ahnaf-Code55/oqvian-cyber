@@ -162,6 +162,28 @@ if ($up) { Ok "API answers on 127.0.0.1:11434" } else { Bad "API not answering â
 # --------------------------------------------------------------------------- #
 if (-not $SkipModel -and $ollama) {
     Step "4/8  models (base 4.7 GB + 4 role models, shared layers)"
+
+    # Models extracted from the release already carry the template and the
+    # current system prompt. Rebuilding them would make Ollama resolve the
+    # upstream GGUF reference, which fails on an offline machine.
+    $present = $true
+    foreach ($m in @("oqvian","oqvian-ciso","oqvian-offensive","oqvian-defensive","oqvian-ir")) {
+        & $ollama show $m --modelfile 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { $present = $false }
+    }
+    $refs = (& $ollama show oqvian --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
+    if ($present -and $refs -ge 1) {
+        Ok "models already built with the tool template â€” nothing to rebuild"
+        Step "4b/8  verify tool template"
+        foreach ($m in @("oqvian","oqvian-ciso","oqvian-offensive","oqvian-defensive","oqvian-ir")) {
+            $n = (& $ollama show $m --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
+            if ($n -ge 1) { Ok "$m tool template ($n refs)" } else { Bad "$m has no .Tools block" }
+        }
+        $SkipModel = $true
+    }
+}
+
+if (-not $SkipModel -and $ollama) {
     $base = Join-Path $Root "models\Modelfile.base"
     $tpl  = Join-Path $Root "models\qwen-tools.template"
     if (-not (Test-Path $base) -or -not (Test-Path $tpl)) {
@@ -190,7 +212,7 @@ if (-not $SkipModel -and $ollama) {
             if ($n -ge 1) { Ok "$m tool template ($n refs)" } else { Bad "$m has no .Tools block" }
         }
     }
-} else { Step "4/8  models"; Skip "models" }
+} elseif (-not $SkipModel) { Step "4/8  models"; Skip "models (no ollama)" }
 
 # --------------------------------------------------------------------------- #
 if (-not $SkipIndex) {

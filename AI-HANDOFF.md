@@ -100,8 +100,9 @@ bash install.sh
 ```
 
 This runs eight stages and takes 20–40 minutes — but the two slow ones are now
-already satisfied, so expect closer to 10. It is idempotent: if it fails, re-run
-it and it resumes.
+already satisfied, so expect closer to 10. Stage 4 detects the extracted models
+and verifies the template rather than rebuilding, and stage 8 finds `dsh` already
+present. It is idempotent: if it fails, re-run it and it resumes.
 
 **Expect** near the end:
 

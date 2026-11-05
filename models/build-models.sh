@@ -24,6 +24,26 @@ else
   cp Modelfile.base "$TMP/base.raw"
 fi
 
+# Already-built models come from the release with the template and the current
+# system prompt. Rebuilding them would need the GGUF reference to resolve, which
+# fails on an offline machine — so detect and stop instead.
+if [ -f "$TMP/base.raw" ]; then
+  tools=$(grep -c '\.Tools' "$TMP/base.raw" 2>/dev/null || true)
+  stale=$(grep -c 'rag_search\|run_tool\|atomic_lookup' "$TMP/base.raw" 2>/dev/null || true)
+  have_all=1
+  for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
+    "$OLLAMA" show "$m" >/dev/null 2>&1 || have_all=0
+  done
+  if [ "${tools:-0}" -ge 1 ] && [ "${stale:-0}" -eq 0 ] && [ "$have_all" -eq 1 ]; then
+    echo "== models already built with the tool template — nothing to do =="
+    for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
+      n=$("$OLLAMA" show "$m" --template 2>/dev/null | grep -c '\.Tools' || true)
+      printf '   %-22s .Tools refs: %s\n' "$m" "$n"
+    done
+    exit 0
+  fi
+fi
+
 python3 - "$TMP/base.raw" "$TMP/base.mf" <<'PY'
 import sys
 from pathlib import Path
