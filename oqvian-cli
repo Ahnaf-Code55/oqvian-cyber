@@ -8,9 +8,28 @@
 # each action by hand.
 set -u
 systemctl --user start ollama.service 2>/dev/null || true
+for i in $(seq 1 20); do
+  curl -sf -m 1 http://127.0.0.1:11434/ >/dev/null && break
+  sleep 0.3
+done
 
 export PATH="$HOME/.local/bin:$PATH"
 export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
+
+# Tool-call bridge on 127.0.0.1:11435 (the harness provider points here).
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PY_BIN="$ROOT/.venv/bin/python"; [ -x "$PY_BIN" ] || PY_BIN="$(command -v python3 || echo python3)"
+if ! curl -sf -m 1 http://127.0.0.1:11435/ >/dev/null 2>&1; then
+  if systemctl --user start oqvian-proxy.service 2>/dev/null; then
+    :
+  else
+    setsid "$PY_BIN" "$ROOT/mcp/toolcall_proxy.py" >/tmp/opencode/oqvian-proxy.log 2>&1 < /dev/null &
+  fi
+  for i in $(seq 1 20); do
+    curl -sf -m 1 http://127.0.0.1:11435/ >/dev/null && break
+    sleep 0.3
+  done
+fi
 
 printf '\033[33m[oqvian-cli] auto-approve mode — tool calls are not prompted.\033[0m\n' >&2
 printf '\033[33m[oqvian-cli] scope: %s\033[0m\n' "${HOME}/.config/oqvian/scope.json" >&2

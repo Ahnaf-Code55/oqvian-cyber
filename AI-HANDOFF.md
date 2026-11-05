@@ -121,7 +121,7 @@ present. It is idempotent: if it fails, re-run it and it resumes.
   ok   ...
 ```
 
-and a final line reporting `install.sh --status` with nine components.
+and a final line reporting `install.sh --status` with ten components.
 
 If `install.sh` still reports `harness (install dsh, then re-run this script)`,
 §2.3 did not complete — fix that rather than installing from npm.
@@ -309,7 +309,7 @@ you change the server, restart the harness — the tool list is read once at boo
 bash install.sh --status
 ```
 
-**Expect:** nine rows, every one `yes`.
+**Expect:** ten rows, every one `yes`.
 
 ```bash
 .venv/bin/python mcp/smoke_test.py

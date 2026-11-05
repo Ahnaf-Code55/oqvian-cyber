@@ -49,7 +49,8 @@ if [ "$STATUS" -eq 1 ]; then
     "models:$([ -f index/meta.json ] && echo yes)" \
     "index:$(grep -q '"count"' index/meta.json 2>/dev/null && echo yes)" \
     "dsh-config:$([ -d "$HOME/.dsh" ] && echo yes)" \
-    "scope:$([ -f "$HOME/.config/oqvian/scope.json" ] && echo yes)"
+    "scope:$([ -f "$HOME/.config/oqvian/scope.json" ] && echo yes)" \
+    "bridge:$(curl -sf -m 1 http://127.0.0.1:11435/ >/dev/null 2>&1 && echo yes)"
   do
     key=${pair%%:*}; val=${pair#*:}
     printf '  %-12s %s\n' "$key" "${val:-MISSING}"
