@@ -98,11 +98,18 @@ ollama show oqvian --template | grep -c '.Tools'     # must be >= 1
 **Linux** (target: the CISO laptop, or any x86_64 box with 16 GB RAM):
 
 ```bash
-git clone <repo> ~/oqvian-cyber && cd ~/oqvian-cyber
+git clone https://github.com/Ahnaf-Code55/oqvian-cyber.git ~/oqvian-cyber
+cd ~/oqvian-cyber
 bash install.sh                  # full: deps, ollama, models, corpus, index, tools, harness
 bash install.sh --status         # report only
 bash install.sh --no-tools       # models + index + harness
 bash install.sh --with-root      # also install the BlackArch root toolset (sudo)
+```
+
+The repository is private; ask for access and clone with a token or `gh`:
+
+```bash
+gh auth login && gh repo clone Ahnaf-Code55/oqvian-cyber ~/oqvian-cyber
 ```
 
 `install.sh` runs the eight stages below and prints a summary; re-run it after
@@ -131,6 +138,27 @@ Verify a deployment at any time:
 dsh --profile web --dump-config | grep -A5 oqvian-mcp
 ollama show oqvian --template | grep -c '.Tools'
 ```
+
+### Handing it to someone else
+
+**Over GitHub** (private repo, recipients need an invite):
+
+```bash
+gh api -X PUT repos/Ahnaf-Code55/oqvian-cyber/collaborators/<their-username> \
+  -f permission=push
+```
+
+They then `gh repo clone Ahnaf-Code55/oqvian-cyber` and run `install.sh`. Only
+source ships — no index, no corpus, no weights, no scope file.
+
+**Offline or air-gapped**, build a bundle instead:
+
+```bash
+./package.sh --all        # code + index + corpus + the 4.7 GB Ollama store
+```
+
+The recipient copies `ollama-models/` into `~/.ollama/models/` before
+installing. `docs/HANDOFF.md` in the bundle is the one-page guide.
 
 ---
 
@@ -288,7 +316,9 @@ For engagements, keep a copy of the scope file and the audit log with the report
 ├── install-tools.sh           userland toolchain (no sudo)
 ├── install-root-tools.sh      Kali/BlackArch mapping (sudo)
 ├── requirements.txt           python deps for the tool server
+├── package.sh                 build a handoff bundle (tar.gz, optional weights)
 ├── docs/CISO-PLAYBOOK.md      twelve CISO workflows, ready to paste
+├── docs/HANDOFF.md            one-page install guide for a new machine
 ├── oqvian / oqvian-cli        launchers (symlinked into ~/.local/bin)
 ├── scripts/
 │   ├── preflight.sh           hardware probe → hardware.env
