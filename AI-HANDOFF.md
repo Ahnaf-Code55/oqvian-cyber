@@ -415,6 +415,7 @@ cosmetics around that.
 | Model answers, never calls a tool | `.Tools` template missing — usually an upstream pull overwrote the release model | Re-extract the release models (§2.3/§3.3), then re-check §4 |
 | Tool call is denied / cancelled instantly | approval preset `ask` in a non-interactive run | Use `oqvian-cli` (sets auto-approve) or the web UI (prompts) |
 | `stream idle timeout after 300000ms` | CPU generation is slower than the harness idle timeout | Add `streamIdleTimeoutMs: 900000` under `ollama-local` in `~/.dsh/settings.yaml` |
+| First turn hangs for tens of minutes and never returns; Ollama logs `/api/chat` 500s | prompt exceeded `num_ctx` — usually dsh's `<available_skills>` catalog (~20k tokens on a host with many skills) | Re-run `python scripts/setup_harness.py`: it disables `skill-filesystem` + `tool-skill` in the profile. Verify `dsh --profile headless --dump-config \| grep -A2 skill-filesystem` shows `disabled: true` |
 | Every network tool says `BLOCKED` | target not in scope file | Add it to `scope.json` — do not switch mode to `open` |
 | `ollama pull` fails | no route to HuggingFace | Use the release asset, §12.1 |
 | Index build seems hung | 10,932 passages, ~9 min on the target CPU | Wait. Check `.venv/bin/python ingest.py` progress, do not restart |

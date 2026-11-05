@@ -381,6 +381,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 req = {}
             if req.get("tools"):
+                _dump = os.environ.get("OQVIAN_PROXY_DUMP")
+                if _dump:
+                    try:
+                        with open(_dump, "w") as _fh:
+                            json.dump(req, _fh, indent=1)
+                    except Exception as _e:
+                        sys.stderr.write(f"[toolcall-proxy] dump failed: {_e}\n")
                 return self._buffered(req, hdrs)
         return self._passthrough(method, raw, hdrs)
 
@@ -420,6 +427,13 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(t, dict)
         }
         names = {n for n in names if n}
+        sys.stderr.write(
+            "[toolcall-proxy] tool turn: "
+            f"{len(names)} tools, tools_json={len(json.dumps(req.get('tools', [])))}B, "
+            f"messages={len(req.get('messages', []))}, "
+            f"prompt_chars={sum(len(str(m.get('content') or '')) for m in req.get('messages', []))}, "
+            f"stream={want_stream}\n"
+        )
 
         up_req = dict(req)
         up_req["stream"] = False
@@ -463,6 +477,7 @@ class Handler(BaseHTTPRequestHandler):
                 headers=h,
                 method="POST",
             )
+            _t0 = time.time()
             try:
                 up = urlreq.urlopen(r, timeout=_TIMEOUT)
                 raw_resp = json.loads(up.read())
@@ -487,6 +502,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             calls, leftover = _parse(resp, names)
+            sys.stderr.write(
+                f"[toolcall-proxy] attempt {attempt + 1}/{attempts}: "
+                f"{time.time() - _t0:.1f}s, "
+                f"prompt_eval={raw_resp.get('prompt_eval_count') if isinstance(raw_resp, dict) else None}, "
+                f"eval={raw_resp.get('eval_count') if isinstance(raw_resp, dict) else None}, "
+                f"done={raw_resp.get('done_reason') if isinstance(raw_resp, dict) else None}, "
+                f"calls={len(calls)}, text={len((leftover or '').strip())}\n"
+            )
             if calls or (leftover or "").strip():
                 break  # got a usable turn (tool call or real text)
             try:

@@ -35,6 +35,15 @@ the machine.
    it renders the schemas, parses the model's `<tool_call>` itself, and retries a
    genuinely empty turn. The harness provider points at the bridge, not Ollama
    directly.
+8. **The prompt fits the window.** dsh discovers agent skills from
+   `~/.dsh/skills`, `~/.agents/skills` and the project, and renders every one into
+   an `<available_skills>` system-reminder. On a host with a few hundred skills
+   that block was **~81 KB (~20k tokens)** on its own — larger than the 7B's entire
+   16384-token context, so every turn overflowed and hung. The OQVIAN profile
+   (`scripts/setup_harness.py`) therefore disables `skill-filesystem` and
+   `tool-skill`: the agent drives a fixed five-tool MCP surface, and its context
+   budget must not depend on what happens to be installed on the host. Measured
+   prompt after the change: ~9.4k tokens (tools + conversation) on a 16K window.
 
 ## Verifying a new deployment
 

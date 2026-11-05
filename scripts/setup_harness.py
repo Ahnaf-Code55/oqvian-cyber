@@ -45,6 +45,18 @@ PATCH = """\
         cwd: {root}
         toolCallTimeoutMs: 900000
         failOnStartupError: false
+# Do not inject the host's agent-skill catalog into the model context. dsh
+# discovers skills from ~/.dsh/skills, ~/.agents/skills and the project, and
+# renders every one as a name+description entry in an <available_skills>
+# system-reminder. On a host with a few hundred skills that block alone was
+# ~81 KB (~20k tokens) — more than the 7B model's whole 16384-token window, so
+# the prompt overflowed the context and no turn ever completed. The OQVIAN
+# profile drives a fixed five-tool MCP surface; a generic skill catalog is
+# irrelevant to it and must not depend on what happens to be installed.
+- id: skill-filesystem
+  disabled: true
+- id: tool-skill
+  disabled: true
 """
 
 HEADLESS_PKG = """\
