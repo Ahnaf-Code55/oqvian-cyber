@@ -140,12 +140,16 @@ def write_settings() -> None:
         # without requiring an API-key env var on the CISO's machine.
         "      headers:\n"
         "        Authorization: Bearer ollama\n"
-        # The default idle timeout is 300 s. A local model on a CPU box can
-        # spend longer than that evaluating the prompt before emitting its
-        # first token, and the harness kills the stream with
-        # "pi-ai stream idle timeout after 300000ms" before any output exists.
-        # A ~9k-token tool prompt at ~6 tok/s is ~25 min, so allow a full hour.
-        # GPU machines never hit this; CPU ones always do.
+        # Two independent clocks, both read from this block (docs/DEEPSEEK-CONTEXT.md §5):
+        #   streamIdleTimeoutMs -> the harness's stream idle watchdog. Default 300 s;
+        #     a CPU box spends longer than that evaluating the prompt, so a turn dies
+        #     as "pi-ai stream idle timeout after 300000ms" before any output exists.
+        #   timeoutMs -> handed to the OpenAI SDK as the per-request timeout. It must
+        #     stay ABOVE the idle window, because the SDK clears its own timer only
+        #     once response headers arrive.
+        # The bridge is what actually makes a long CPU turn survivable -- it sends
+        # headers and SSE keepalives before calling the model -- so do not treat
+        # these numbers as the fix on their own. GPU machines never hit any of it.
         "      streamIdleTimeoutMs: 3600000\n"
         "      timeoutMs: 7200000\n" + models
     )

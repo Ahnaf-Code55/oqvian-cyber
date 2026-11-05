@@ -72,10 +72,11 @@ TOOL_MODE = os.environ.get("OQVIAN_PROXY_TOOL_MODE", "render").lower()
 _FENCE = re.compile(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", re.DOTALL)
 # Qwen's tool template wraps each call in <tool_call>...</tool_call>.
 _TOOLCALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-# Upstream patience. The bridge buffers tool turns (upstream stream=False), so it
-# must be at least as patient as the harness: on a CPU-only box a single turn
-# (prompt eval over ~9k tokens) can run 25-30 min. Keep this above the harness's
-# streamIdleTimeoutMs, or the bridge kills a turn the client is still waiting on.
+# Upstream patience: how long the bridge will wait on Ollama for one attempt.
+# A tool turn is buffered (upstream stream=False), and one attempt on a CPU-only
+# box can run 25-30 min (prompt eval over ~10k tokens), so this must exceed the
+# harness's streamIdleTimeoutMs. A client is never left waiting blind, though --
+# _KEEPALIVE below keeps its stream open meanwhile.
 _TIMEOUT = int(os.environ.get("OQVIAN_PROXY_TIMEOUT", "1800"))  # seconds
 _RETRIES = int(os.environ.get("OQVIAN_PROXY_RETRIES", "3"))  # empty-completion retries
 # While a tool turn is buffered upstream, a streaming client gets SSE comment
