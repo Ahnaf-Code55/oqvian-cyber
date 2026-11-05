@@ -179,8 +179,14 @@ bash install.sh
 | `oqvian-harness-*-npm-cache.tar` | 195 MB | primed npm cache for `@deepseek-ai/dsh@0.1.1-rc.2`, linux-x64 **and** win32-x64 |
 
 **Fully offline**, download the assets on a connected machine and carry them
-over; `install-release-assets.sh` reads a local directory just as happily as the
-API. `package.sh --all` still exists for a single-file bundle.
+over, then point the installer at the directory:
+
+```bash
+gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel   # connected box
+bash scripts/install-release-assets.sh --from-dir ./oq-rel                  # target box
+```
+
+`package.sh --all` still exists for a single-file bundle.
 
 **Installing with an AI assistant?** Give it [`AI-HANDOFF.md`](AI-HANDOFF.md) —
 it is written as executable steps with expected output and a failure table. A

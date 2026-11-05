@@ -93,6 +93,13 @@ showing `oqvian:latest`, `oqvian:defensive-offensive`, `oqvian-ciso`,
 Takes 5–20 minutes depending on bandwidth. If it stops with
 `install gh, or export GH_TOKEN`, re-export the token from §2.2 and re-run.
 
+If the assets were carried over from another machine instead, point at them and
+nothing touches the network:
+
+```bash
+bash scripts/install-release-assets.sh --from-dir /media/usb/oq-rel
+```
+
 ### 2.4 Install the rest
 
 ```bash

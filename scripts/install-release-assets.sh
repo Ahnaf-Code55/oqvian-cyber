@@ -6,6 +6,7 @@
 #   ./scripts/install-release-assets.sh --tag v1.0.0
 #   ./scripts/install-release-assets.sh --models-only
 #   ./scripts/install-release-assets.sh --harness-only
+#   ./scripts/install-release-assets.sh --from-dir ~/oq-rel
 #
 # What it does:
 #   1. downloads the split model archive, reassembles it, extracts the Ollama
@@ -24,13 +25,15 @@ REPO="Ahnaf-Code55/oqvian-cyber"
 TAG="v1.0.0"
 DO_MODELS=1
 DO_HARNESS=1
+FROM_DIR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --tag)          shift; TAG="$1" ;;
+    --from-dir)     shift; FROM_DIR="$1" ;;
     --models-only)  DO_HARNESS=0 ;;
     --harness-only) DO_MODELS=0 ;;
-    -h|--help)      sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
   shift
@@ -51,8 +54,23 @@ PATTERNS=()
 [ "$DO_HARNESS" -eq 1 ] && PATTERNS+=("oqvian-harness-*")
 
 # Prefer gh (handles the private repo's auth for us); fall back to curl+token.
+# Sets SRC to the directory holding the assets.
+SRC="$TMP"
 fetch_release() {
-  if command -v gh >/dev/null 2>&1; then
+  if [ -n "$FROM_DIR" ]; then
+    # Air-gapped path: assets were downloaded elsewhere and carried in. Use the
+    # directory in place — copying 4.7 GB into tmpfs just to read it back fails.
+    [ -d "$FROM_DIR" ] || die "--from-dir $FROM_DIR is not a directory"
+    SRC="$(cd "$FROM_DIR" && pwd)"
+    found=0
+    for p in "${PATTERNS[@]}"; do
+      for f in "$SRC"/$p; do
+        [ -f "$f" ] && found=$((found+1))
+      done
+    done
+    [ "$found" -gt 0 ] || die "no matching assets in $SRC"
+    ok "using $SRC"
+  elif command -v gh >/dev/null 2>&1; then
     gh release download "$TAG" --repo "$REPO" --dir "$TMP" --clobber \
       $(for p in "${PATTERNS[@]}"; do printf -- '--pattern %s ' "$p"; done)
   else
@@ -78,7 +96,7 @@ fetch_release
 # --------------------------------------------------------------------------- #
 if [ "$DO_MODELS" -eq 1 ]; then
   say "models"
-  parts=$(find "$TMP" -name 'oqvian-models-*.tar.part-*' | sort)
+  parts=$(find "$SRC" -maxdepth 1 -name 'oqvian-models-*.tar.part-*' | sort)
   [ -n "$parts" ] || die "no oqvian-models-*.tar.part-* in the release"
 
   n=$(printf '%s\n' "$parts" | wc -l)
@@ -86,12 +104,10 @@ if [ "$DO_MODELS" -eq 1 ]; then
   total=$(du -ch $parts | tail -1 | cut -f1)
   echo "  $n parts, $total"
 
-  cat $parts > "$TMP/models.tar"
-
-  sha_file=$(find "$TMP" -maxdepth 1 -name 'oqvian-models-*.sha256' | head -1)
+  sha_file=$(find "$SRC" -maxdepth 1 -name 'oqvian-models-*.sha256' | head -1)
   if [ -n "$sha_file" ]; then
     echo "  verifying part checksums"
-    ( cd "$TMP" && sha256sum -c "$(basename "$sha_file")" --quiet ) \
+    ( cd "$SRC" && sha256sum -c "$(basename "$sha_file")" --quiet ) \
       || die "checksum mismatch — re-download"
     ok "checksums match"
   else
@@ -103,7 +119,12 @@ if [ "$DO_MODELS" -eq 1 ]; then
   if [ -d "$dest/models/blobs" ]; then
     warn "merging into an existing store; shared blobs are not duplicated"
   fi
-  tar -xf "$TMP/models.tar" -C "$dest"
+
+  # Stream the parts straight into tar. Reassembling first would need another
+  # 4.7 GB of free space next to the parts, which /tmp on a tmpfs does not have.
+  echo "  extracting"
+  # shellcheck disable=SC2086
+  cat $parts | tar -xf - -C "$dest"
   ok "extracted into $dest/models"
 
   if command -v ollama >/dev/null 2>&1; then
@@ -122,7 +143,7 @@ fi
 # --------------------------------------------------------------------------- #
 if [ "$DO_HARNESS" -eq 1 ]; then
   say "harness"
-  cache_tar=$(find "$TMP" -name 'oqvian-harness-*.tar' | head -1)
+  cache_tar=$(find "$SRC" -maxdepth 1 -name 'oqvian-harness-*.tar' | head -1)
   if [ -z "$cache_tar" ]; then
     warn "no oqvian-harness-*.tar in the release — skipping (use npm instead)"
   else

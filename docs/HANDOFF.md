@@ -70,15 +70,22 @@ Add `--with-root` if you have sudo and want the full root toolset
 
 ### No internet at all
 
-The release assets are also how you provision a machine with no route out:
+The release assets are also how you provision a machine with no route out. On a
+connected machine:
 
 ```bash
 gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel
 ```
 
-Copy `oq-rel/` to the target on a USB stick, then follow
-[`../AI-HANDOFF.md`](../AI-HANDOFF.md) §3.3 from the "verify, reassemble, and
-extract" line onwards. Everything after that point is offline.
+Carry `oq-rel/` over on a USB stick, then on the target:
+
+```bash
+bash scripts/install-release-assets.sh --from-dir ./oq-rel
+bash install.sh
+```
+
+`--from-dir` uses the directory in place and touches no network at all. The
+Windows equivalent is written out in [`../AI-HANDOFF.md`](../AI-HANDOFF.md) §3.3.
 
 ---
 
