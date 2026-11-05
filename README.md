@@ -126,10 +126,12 @@ template and the unified OQVIAN system prompt. Pulling the upstream GGUF instead
 gives you a model that cannot call tools — see [`AI-HANDOFF.md`](AI-HANDOFF.md)
 §12.1.
 
-The repository is private; ask for access and clone with a token or `gh`:
+The repository is **public** — clone it directly, no token needed:
 
 ```bash
-gh auth login && gh repo clone Ahnaf-Code55/oqvian-cyber ~/oqvian-cyber
+git clone https://github.com/Ahnaf-Code55/oqvian-cyber.git ~/oqvian-cyber
+# or, with the GitHub CLI (needs gh auth login once):
+gh repo clone Ahnaf-Code55/oqvian-cyber ~/oqvian-cyber
 ```
 
 `install.sh` runs the eight stages below and prints a summary; re-run it after
@@ -161,20 +163,26 @@ ollama show oqvian --template | grep -c '.Tools'
 
 ### Handing it to someone else
 
-**Over GitHub** (private repo, recipients need an invite):
+**Over GitHub** (public repo — they just clone it):
 
 ```bash
-gh api -X PUT repos/Ahnaf-Code55/oqvian-cyber/collaborators/<their-username> \
-  -f permission=push
+git clone https://github.com/Ahnaf-Code55/oqvian-cyber.git
 ```
 
 The clone carries source only — no index, no corpus, no scope file. The **weights
 and the harness ship as release assets**, so the recipient runs:
 
 ```bash
-gh repo clone Ahnaf-Code55/oqvian-cyber && cd oqvian-cyber
+git clone https://github.com/Ahnaf-Code55/oqvian-cyber.git && cd oqvian-cyber
 bash scripts/install-release-assets.sh
 bash install.sh
+```
+
+To give someone write access to the repo itself (not needed just to install):
+
+```bash
+gh api -X PUT repos/Ahnaf-Code55/oqvian-cyber/collaborators/<their-username> \
+  -f permission=push
 ```
 
 **Release assets** (`v1.1.0`):
@@ -197,7 +205,9 @@ bash scripts/install-release-assets.sh --from-dir ./oq-rel                  # ta
 
 **Installing with an AI assistant?** Give it [`AI-HANDOFF.md`](AI-HANDOFF.md) —
 it is written as executable steps with expected output and a failure table. A
-human should read [`docs/HANDOFF.md`](docs/HANDOFF.md).
+human should read [`docs/HANDOFF.md`](docs/HANDOFF.md); for a note that covers
+just the **model + DeepSeek harness** download and install, see
+[`docs/HANDOFF-TO-TURJOS.md`](docs/HANDOFF-TO-TURJOS.md).
 
 ---
 

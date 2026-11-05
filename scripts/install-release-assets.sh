@@ -65,7 +65,9 @@ PATTERNS=()
 [ "$DO_MODELS"  -eq 1 ] && PATTERNS+=("oqvian-models-*")
 [ "$DO_HARNESS" -eq 1 ] && PATTERNS+=("oqvian-harness-*")
 
-# Prefer gh (handles the private repo's auth for us); fall back to curl+token.
+# Prefer gh when it is installed; otherwise fall back to curl. A GH_TOKEN is
+# only needed if the repository is private — for a public release the anonymous
+# API and download URLs are enough.
 # Sets SRC to the directory holding the assets.
 SRC="$TMP"
 fetch_release() {
@@ -86,16 +88,17 @@ fetch_release() {
     gh release download "$TAG" --repo "$REPO" --dir "$TMP" --clobber \
       $(for p in "${PATTERNS[@]}"; do printf -- '--pattern %s ' "$p"; done)
   else
-    [ -n "${GH_TOKEN:-}" ] || die "install gh, or export GH_TOKEN=<token with repo scope>"
+    AUTH=()
+    [ -n "${GH_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $GH_TOKEN")
     api="https://api.github.com/repos/$REPO/releases/tags/$TAG"
-    curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" \
+    curl -fsSL ${AUTH[@]+"${AUTH[@]}"} "$api" \
       | python3 -c 'import json,sys
 pats = sys.argv[1:]
 for a in json.load(sys.stdin)["assets"]:
     if any(__import__("fnmatch").fnmatch(a["name"], p) for p in pats):
         print(a["name"], a["url"])' "${PATTERNS[@]}" \
       | while read -r name url; do
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+          curl -fsSL ${AUTH[@]+"${AUTH[@]}"} \
                -H "Accept: application/octet-stream" -o "$TMP/$name" "$url"
           printf '  got  %s\n' "$name"
         done

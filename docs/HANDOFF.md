@@ -39,11 +39,11 @@ installer sets automatically. Details: `deploy/windows/README.md`.
 
 Both platforms start the same way: clone, then pull the built models and harness
 from this repository's release. That download is ~4.9 GB and replaces both the
-HuggingFace pull and the npm install.
+HuggingFace pull and the npm install. The repository is public, so no token or
+GitHub login is required.
 
 ```bash
-gh auth login
-gh repo clone Ahnaf-Code55/oqvian-cyber ~/oqvian-cyber
+git clone https://github.com/Ahnaf-Code55/oqvian-cyber.git ~/oqvian-cyber
 cd ~/oqvian-cyber
 bash scripts/install-release-assets.sh     # models + harness, no network beyond GitHub
 ```
@@ -71,11 +71,21 @@ Add `--with-root` if you have sudo and want the full root toolset
 ### No internet at all
 
 The release assets are also how you provision a machine with no route out. On a
-connected machine:
+connected machine (public repo — no token needed):
 
 ```bash
-gh release download v1.1.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel
+mkdir -p oq-rel && cd oq-rel
+base=https://github.com/Ahnaf-Code55/oqvian-cyber/releases/download/v1.1.0
+for f in oqvian-models-2026.11.06.tar.part-aa \
+         oqvian-models-2026.11.06.tar.part-ab \
+         oqvian-models-2026.11.06.tar.part-ac \
+         oqvian-models-2026.11.06.sha256 \
+         oqvian-harness-0.1.1-rc.2-npm-cache.tar; do
+  curl -fL --retry 3 -O "$base/$f"
+done
 ```
+(`gh release download v1.1.0 --repo Ahnaf-Code55/oqvian-cyber -D oq-rel` does the
+same if you have `gh` logged in.)
 
 Carry `oq-rel/` over on a USB stick, then on the target:
 
@@ -92,9 +102,9 @@ Windows equivalent is written out in [`../AI-HANDOFF.md`](../AI-HANDOFF.md) §3.
 ## 4. Prove it works (five minutes)
 
 ```bash
-bash install.sh --status                     # nine components, expect "yes"
-python mcp/smoke_test.py                     # 19 checks, no model needed
-ollama show oqvian --template | grep -c '.Tools'   # expect 3
+bash install.sh --status                     # ten components, expect "yes"
+.venv/bin/python mcp/smoke_test.py           # 19 checks, no model needed
+ollama show oqvian-cyber-control-full-unlocked-v1.1 --template | grep -c '.Tools'   # expect 3
 ```
 
 Then the one that matters — the full chain, harness → MCP → model → tool →
@@ -118,9 +128,17 @@ stops the agent acting on the wrong host. Create it before any network work:
 ```json
 {
   "mode": "restricted",
-  "targets": ["10.0.0.0/24", "app.example.com"]
+  "allowed_hosts": ["localhost", "127.0.0.1", "::1"],
+  "allowed_domains": ["app.example.com"],
+  "allowed_cidrs": ["127.0.0.0/8", "10.0.0.0/8", "192.168.1.0/24"],
+  "allowed_tools": "*",
+  "max_scan_ports": 65535
 }
 ```
+
+Targets go in `allowed_hosts` (exact names), `allowed_domains` (suffix match) or
+`allowed_cidrs` (IP ranges). There is no `targets` key — a bare `"targets"` list
+is ignored, which is the quiet way to end up with a scope that allows nothing.
 
 Windows: `%USERPROFILE%\.config\oqvian\scope.json`
 Linux/macOS: `~/.config/oqvian/scope.json`
