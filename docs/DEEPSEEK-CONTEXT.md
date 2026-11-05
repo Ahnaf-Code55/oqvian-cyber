@@ -163,13 +163,21 @@ llm-pi-ai:
     ollama-local:
       displayName: OQVIAN (local)
       api: openai-completions
-      baseURL: http://127.0.0.1:11434/v1
+      baseURL: http://127.0.0.1:11435/v1   # the tool-call bridge, not Ollama
       headers:
         Authorization: Bearer ollama      # pi-ai refuses credential-less providers
       streamIdleTimeoutMs: 1800000          # 30 min — THE CPU FIX, see below
       timeoutMs: 3600000                    # 60 min
       models: …five oqvian entries…
 ```
+
+`baseURL` points at the **tool-call bridge** (`mcp/toolcall_proxy.py`), which
+listens on `127.0.0.1:11435` and forwards to Ollama on `127.0.0.1:11434`. The
+bridge owns the tool protocol: Ollama intermittently drops a valid tool call and
+returns an empty turn, so the bridge renders the tool schemas itself, parses the
+model's `<tool_call>` text into a real `tool_calls` array, and retries a genuinely
+empty turn. It is started by `install.sh` (user unit `oqvian-proxy.service`) and
+by the `oqvian` launcher.
 
 Two non-obvious facts:
 

@@ -22,7 +22,11 @@ stack if missing:
    system prompt are baked in. §2.3 fetches it from this repository's release. Read §12.1
    before considering any other source.
 2. **The harness** — `@deepseek-ai/dsh` at exactly `0.1.1-rc.2`, which gives the
-   model a browser UI and a tool loop.
+   model a browser UI and a tool loop. It talks to the **tool-call bridge**
+   (`mcp/toolcall_proxy.py`) on `127.0.0.1:11435`, which forwards to Ollama and
+   shields the agent from Ollama's intermittent dropped tool calls. `install.sh`
+   starts it as `oqvian-proxy.service`; `scripts/setup_harness.py` points the
+   provider at it.
 3. **The tool server** — `mcp/server.py`, which exposes 5 tools the model calls
    itself: `kb`, `recon`, `execute`, `governance`, `transform`.
 
