@@ -214,6 +214,11 @@ fi
 step "8/8  harness wiring + verification"
 if have dsh; then
   bash scripts/setup-harness.sh && okmsg "dsh profiles, settings, scope wired" || failmsg "setup-harness"
+  if .venv/bin/python scripts/brand_harness.py >/dev/null 2>&1; then
+    okmsg "harness branded OQVIAN HARNESS"
+  else
+    skipmsg "harness branding (re-run: .venv/bin/python scripts/brand_harness.py)"
+  fi
 else
   echo "  dsh not installed. Install the harness once:"
   echo "    npm i -g @deepseek-ai/dsh@0.1.1-rc.2"
@@ -222,9 +227,10 @@ else
   skipmsg "harness (install dsh, then re-run this script)"
 fi
 
-.venv/bin/python mcp/smoke_test.py >/tmp/opencode/oqvian-smoke.log 2>&1 \
-  && okmsg "tool server smoke test (19 checks)" \
-  || { failmsg "smoke test — see /tmp/opencode/oqvian-smoke.log"; tail -5 /tmp/opencode/oqvian-smoke.log; }
+SMOKE_LOG="${TMPDIR:-/tmp}/oqvian-smoke.$$.log"
+.venv/bin/python mcp/smoke_test.py >"$SMOKE_LOG" 2>&1 \
+  && { okmsg "tool server smoke test (19 checks)"; rm -f "$SMOKE_LOG"; } \
+  || { failmsg "smoke test — see $SMOKE_LOG"; tail -5 "$SMOKE_LOG"; }
 
 # --------------------------------------------------------------------------- #
 printf '\n\033[1m== summary ==\033[0m\n'

@@ -274,6 +274,8 @@ if (-not $SkipHarness) {
     if (Test-Path $venvPy) {
         & $venvPy scripts\setup_harness.py
         if ($LASTEXITCODE -eq 0) { Ok "profiles, settings, scope wired" } else { Bad "setup_harness.py" }
+        & $venvPy scripts\brand_harness.py 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { Ok "harness branded OQVIAN HARNESS" } else { Skip "harness branding (re-run scripts\brand_harness.py)" }
     }
 } else { Step "7/8  harness"; Skip "harness" }
 

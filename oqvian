@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OQVIAN launcher — starts the local model service, then the harness UI.
+# OQVIAN HARNESS — starts the local model service, then the browser UI.
 set -u
 systemctl --user start ollama.service 2>/dev/null || true
 for i in $(seq 1 20); do
@@ -7,4 +7,9 @@ for i in $(seq 1 20); do
   sleep 0.3
 done
 export PATH="$HOME/.local/bin:$PATH"
+
+printf '\n\033[1m  OQVIAN HARNESS\033[0m\n'
+printf '  model   '; "$(command -v ollama || echo "$HOME/ollama")" ps 2>/dev/null | awk 'NR==2{printf "%s  (%s)\n", $1, $4} END{if(NR<2) print "idle"}'
+printf '  scope   %s\n\n' "${HOME}/.config/oqvian/scope.json"
+
 exec dsh web "$@"

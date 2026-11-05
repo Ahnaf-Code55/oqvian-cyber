@@ -2,10 +2,16 @@
 
 A fully local defensive/offensive security assistant for a CISO and the security
 team: a 7B security model, a grounded knowledge index, and a Kali-class toolchain
-that the model can call itself through the DeepSeek Harness.
+that the model can call itself through the OQVIAN HARNESS.
 
 Nothing leaves the machine. No cloud API, no telemetry, no data retention by a
 third party.
+
+> **Handing this to an AI assistant to install?**
+> Point it at [`AI-HANDOFF.md`](AI-HANDOFF.md). It is written as ordered,
+> executable instructions with expected output per step, a failure table, and a
+> list of things not to "improve". A human installer should read
+> [`docs/HANDOFF.md`](docs/HANDOFF.md) instead.
 
 ---
 
@@ -317,12 +323,14 @@ For engagements, keep a copy of the scope file and the audit log with the report
 ├── install-root-tools.sh      Kali/BlackArch mapping (sudo)
 ├── requirements.txt           python deps for the tool server
 ├── package.sh                 build a handoff bundle (tar.gz, optional weights)
+├── AI-HANDOFF.md              install instructions written for an AI assistant
 ├── docs/CISO-PLAYBOOK.md      twelve CISO workflows, ready to paste
-├── docs/HANDOFF.md            one-page install guide for a new machine
+├── docs/HANDOFF.md            one-page install guide for a human
 ├── oqvian / oqvian-cli        launchers (symlinked into ~/.local/bin)
 ├── scripts/
 │   ├── preflight.sh           hardware probe → hardware.env
 │   ├── setup_harness.py       dsh profiles + settings + scope (cross-platform)
+│   ├── brand_harness.py       rename the harness to OQVIAN HARNESS
 │   └── setup-harness.sh       thin bash wrapper
 ├── deploy/windows/            install.ps1 + CISO laptop guide (Iris Xe MAX)
 ├── models/                    Modelfile.*, qwen-tools.template, build-models.sh

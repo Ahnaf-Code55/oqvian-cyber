@@ -2,6 +2,11 @@
 
 One page. If you only read one section, read **Install**.
 
+> Installing with an AI assistant (ChatGPT, Claude, Copilot)? Give it
+> [`../AI-HANDOFF.md`](../AI-HANDOFF.md) instead — that file is written for an
+> agent to execute, with expected output per step and a failure table. This one
+> is for a human.
+
 ---
 
 ## 1. What you are getting
