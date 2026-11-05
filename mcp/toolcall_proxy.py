@@ -31,6 +31,8 @@ passthrough. Stdlib only. Configuration (env):
     OQVIAN_PROXY_HOST          default 127.0.0.1
     OQVIAN_PROXY_PORT          default 11435
     OQVIAN_PROXY_RETRIES       default 3
+    OQVIAN_PROXY_TIMEOUT       default 1800  upstream seconds; raise it (e.g. 3600)
+                               on a CPU-only box where one turn can exceed 30 min
 
 Run:  python3 mcp/toolcall_proxy.py
 """
@@ -66,7 +68,11 @@ TOOL_MODE = os.environ.get("OQVIAN_PROXY_TOOL_MODE", "render").lower()
 _FENCE = re.compile(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", re.DOTALL)
 # Qwen's tool template wraps each call in <tool_call>...</tool_call>.
 _TOOLCALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-_TIMEOUT = 1800  # CPU-only generation can be slow
+# Upstream patience. The bridge buffers tool turns (upstream stream=False), so it
+# must be at least as patient as the harness: on a CPU-only box a single turn
+# (prompt eval over ~9k tokens) can run 25-30 min. Keep this above the harness's
+# streamIdleTimeoutMs, or the bridge kills a turn the client is still waiting on.
+_TIMEOUT = int(os.environ.get("OQVIAN_PROXY_TIMEOUT", "1800"))  # seconds
 _RETRIES = int(os.environ.get("OQVIAN_PROXY_RETRIES", "3"))  # empty-completion retries
 
 

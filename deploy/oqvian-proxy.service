@@ -11,6 +11,10 @@ ExecStart=@PY@ @ROOT@/mcp/toolcall_proxy.py
 Environment=OQVIAN_PROXY_UPSTREAM=http://127.0.0.1:11434
 Environment=OQVIAN_PROXY_HOST=127.0.0.1
 Environment=OQVIAN_PROXY_PORT=11435
+# Upstream patience per turn. A CPU-only box can spend 25-30 min evaluating the
+# ~9k-token tool prompt before the first token; the harness waits 30 min, so the
+# bridge must wait longer still. GPU machines finish in well under a minute.
+Environment=OQVIAN_PROXY_TIMEOUT=3600
 Restart=on-failure
 RestartSec=2
 

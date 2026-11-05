@@ -416,6 +416,7 @@ cosmetics around that.
 | Tool call is denied / cancelled instantly | approval preset `ask` in a non-interactive run | Use `oqvian-cli` (sets auto-approve) or the web UI (prompts) |
 | `stream idle timeout after 300000ms` | CPU generation is slower than the harness idle timeout | Add `streamIdleTimeoutMs: 900000` under `ollama-local` in `~/.dsh/settings.yaml` |
 | First turn hangs for tens of minutes and never returns; Ollama logs `/api/chat` 500s | prompt exceeded `num_ctx` — usually dsh's `<available_skills>` catalog (~20k tokens on a host with many skills) | Re-run `python scripts/setup_harness.py`: it disables `skill-filesystem` + `tool-skill` in the profile. Verify `dsh --profile headless --dump-config \| grep -A2 skill-filesystem` shows `disabled: true` |
+| `dsh: TIMEOUT: Request timed out` after ~30 min on a CPU-only box | the bridge buffers each tool turn (`upstream stream=False`) and its upstream timeout (1800 s) expired at the same moment the harness's idle window did — a 9k-token turn at ~6 tok/s is ~25 min | the bridge unit sets `OQVIAN_PROXY_TIMEOUT=3600` and `streamIdleTimeoutMs` is 3600000; keep the bridge timeout **above** the harness idle window. A GPU box never needs more than the default |
 | Every network tool says `BLOCKED` | target not in scope file | Add it to `scope.json` — do not switch mode to `open` |
 | `ollama pull` fails | no route to HuggingFace | Use the release asset, §12.1 |
 | Index build seems hung | 10,932 passages, ~9 min on the target CPU | Wait. Check `.venv/bin/python ingest.py` progress, do not restart |

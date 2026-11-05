@@ -144,9 +144,10 @@ def write_settings() -> None:
         # spend longer than that evaluating the prompt before emitting its
         # first token, and the harness kills the stream with
         # "pi-ai stream idle timeout after 300000ms" before any output exists.
+        # A ~9k-token tool prompt at ~6 tok/s is ~25 min, so allow a full hour.
         # GPU machines never hit this; CPU ones always do.
-        "      streamIdleTimeoutMs: 1800000\n"
-        "      timeoutMs: 3600000\n" + models
+        "      streamIdleTimeoutMs: 3600000\n"
+        "      timeoutMs: 7200000\n" + models
     )
 
     if "ollama-local:" in s:
