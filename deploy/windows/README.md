@@ -2,8 +2,8 @@
 
 Target machine: **Intel Core i7 11th gen · 16 GB RAM · Intel Iris Xe MAX (4 GB VRAM,
 discrete)**. This guide sets up the whole stack natively on Windows: Ollama with
-Intel GPU offload, the five OQVIAN models, the knowledge index, the harness, and
-the tool server.
+Intel GPU offload, the single OQVIAN model, the knowledge index, the tool-call
+bridge, the harness, and the tool server.
 
 Expected performance on that machine with the GPU path working: **12–25 tok/s**
 generation, prompt processing 60–150 tok/s. If it falls back to CPU only you will
@@ -21,6 +21,7 @@ see 2–4 tok/s — the difference is obvious within one prompt, see
 | Knowledge index (10,932 passages) | `%USERPROFILE%\oqvian-cyber\index` | 120 MB |
 | Corpus sources | `%USERPROFILE%\oqvian-cyber\corpus\raw` | 1.6 GB |
 | Python venv + MCP server | `%USERPROFILE%\oqvian-cyber\.venv` | 90 MB |
+| Tool-call bridge (127.0.0.1:11435) | started from `.venv`; auto-starts at logon | — |
 | Harness (dsh + Node runtime) | `%USERPROFILE%\.dsh` | 400 MB |
 
 Total ≈ **8 GB**. Have 15 GB free before you start.
@@ -51,13 +52,17 @@ it stopped. Flags:
 .\deploy\windows\install.ps1 -Status         # report only, change nothing
 ```
 
-Then start it:
+Then start it (**PowerShell**; the launchers are bash, so invoke `dsh` directly):
 
 ```powershell
-oqvian            # web UI
-oqvian-cli "Map T1059.001 to Sigma rules we can deploy"
-ollama run oqvian-cyber-control-full-unlocked-v1.1
+dsh web                                                  # web UI
+dsh --profile headless "Map T1059.001 to Sigma rules we can deploy"   # one-shot
+ollama run oqvian-cyber-control-full-unlocked-v1.1       # direct
 ```
+
+The installer has already started the tool-call bridge and registered it to
+start at logon, so `dsh` reaches the provider on `127.0.0.1:11435` with no
+further setup.
 
 ---
 
@@ -223,14 +228,37 @@ ignores auth. The fix is the static header the installer writes:
     ollama-local:
       displayName: OQVIAN (local)
       api: openai-completions
-      baseURL: http://127.0.0.1:11434/v1
+      baseURL: http://127.0.0.1:11435/v1
       headers:
         Authorization: Bearer ollama
 ```
 
+Note the port: the provider points at the **tool-call bridge** on `11435`, not
+Ollama's `11434`. The bridge owns the tool protocol (it renders the schemas,
+parses the model's `<tool_call>`, and retries a dropped call), so pointing the
+provider straight at Ollama lets a valid tool call silently vanish. If the
+bridge is down, `dsh` will fail to reach the provider.
+
 Do **not** add `apiKeyEnv:` pointing at an unset variable — that produces the
 other variant of the same error. Re-run `python scripts\setup_harness.py` to
 restore the block.
+
+**`dsh` cannot reach the provider / connection refused on 11435.**
+The bridge is not running. The installer starts it and registers
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\oqvian-bridge.cmd`
+so it starts at every logon. Start it by hand to test:
+
+```powershell
+.venv\Scripts\pythonw.exe mcp\toolcall_proxy.py
+# or, for visible output:
+.venv\Scripts\python.exe mcp\toolcall_proxy.py
+```
+
+Then confirm it answers and re-run the installer to restore the logon entry:
+
+```powershell
+.\deploy\windows\install.ps1 -Status     # 'bridge' row must read 'present'
+```
 
 **Model answers but never calls a tool.**
 The chat template lost its `.Tools` block. Rebuild:
@@ -261,8 +289,10 @@ AV ignores is itself a control decision.
 ## 7. Uninstall
 
 ```powershell
-# models
-ollama rm oqvian-cyber-control-full-unlocked-v1.1 oqvian oqvian:defensive-offensive oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir
+# model
+ollama rm oqvian-cyber-control-full-unlocked-v1.1
+# bridge logon entry
+Remove-Item "$([Environment]::GetFolderPath('Startup'))\oqvian-bridge.cmd" -ErrorAction SilentlyContinue
 # harness
 npm uninstall -g @deepseek-ai/dsh
 # everything else is inside these two directories

@@ -5,8 +5,9 @@
 .DESCRIPTION
     Sets up, in order: hardware probe, Ollama + Intel GPU offload, the single
     OQVIAN model with the Qwen2.5 tool-calling template, the knowledge corpus
-    and FTS5 index, the deepseek harness, the MCP tool server wiring, and a
-    smoke test. Idempotent — safe to re-run.
+    and FTS5 index, the deepseek harness, the MCP tool server wiring, the
+    tool-call bridge (127.0.0.1:11435, auto-started at logon), and a smoke
+    test. Idempotent — safe to re-run.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
@@ -45,6 +46,49 @@ function Info($msg) { Write-Host "  $msg" -ForegroundColor Gray }
 
 function Have($cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
+# --- tool-call bridge (127.0.0.1:11435 <-> Ollama on 11434) ----------------- #
+# The harness provider points at the bridge, not Ollama directly: Ollama's tool
+# parser intermittently drops a valid call and returns an empty turn, and the
+# bridge owns the protocol (renders the schemas, parses <tool_call>, retries).
+# Without it the Windows stack would aim dsh at a dead port.
+$BridgePort = 11435
+function Bridge-Up {
+    try { Invoke-RestMethod -Uri "http://127.0.0.1:$BridgePort/" -TimeoutSec 2 | Out-Null; return $true }
+    catch { return $false }
+}
+function Get-VenvPython {
+    $pyw = Join-Path $Root ".venv\Scripts\pythonw.exe"   # windowless: no console spawn
+    if (Test-Path $pyw) { return $pyw }
+    return $venvPy
+}
+function Start-Bridge {
+    # Idempotent: a second instance cannot bind 11435 and simply exits.
+    if (Bridge-Up) { return $true }
+    $py = Get-VenvPython
+    Start-Process -FilePath $py -ArgumentList (Join-Path $Root "mcp\toolcall_proxy.py") `
+        -WorkingDirectory $Root -WindowStyle Hidden
+    for ($i = 0; $i -lt 30; $i++) {
+        if (Bridge-Up) { return $true }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
+}
+function Register-BridgeAtLogon {
+    # Startup-folder entry: no admin, survives reboots, matches how the rest of
+    # the user-level stack is launched. Idempotent — rewrites the same file.
+    $startup = [Environment]::GetFolderPath("Startup")
+    $cmd = Join-Path $startup "oqvian-bridge.cmd"
+    $logDir = Join-Path $env:LOCALAPPDATA "oqvian"
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $body = @(
+        "@echo off",
+        "rem OQVIAN tool-call bridge (127.0.0.1:$BridgePort) - installed by deploy\windows\install.ps1",
+        "`"$(Get-VenvPython)`" `"$Root\mcp\toolcall_proxy.py`" >> `"$logDir\proxy.log`" 2>&1"
+    ) -join "`r`n"
+    [System.IO.File]::WriteAllText($cmd, $body + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
+    return $cmd
+}
+
 # --------------------------------------------------------------------------- #
 Step "1/8  hardware"
 try {
@@ -71,6 +115,7 @@ if ($Status) {
         @("git",        (Have "git")),
         @("index",      (Test-Path "index\meta.json")),
         @("venv",       (Test-Path ".venv")),
+        @("bridge",     (Bridge-Up)),
         @("dsh config", (Test-Path (Join-Path $HOME ".dsh")))))
     {
         $mark = "MISSING"; if ($pair[1]) { $mark = "present" }
@@ -298,11 +343,29 @@ if (-not $SkipHarness) {
 } else { Step "7/8  harness"; Skip "harness" }
 
 # --------------------------------------------------------------------------- #
+# The provider baseURL written by setup_harness.py is the bridge, so the bridge
+# has to be listening before the first prompt. Start it and persist it at logon.
+Step "7b/8  tool-call bridge"
+if (Test-Path $venvPy) {
+    $started = Start-Bridge
+    if ($started) { Ok "bridge listening on 127.0.0.1:$BridgePort (tool-mode: render)" }
+    else { Bad "bridge did not come up on $BridgePort - run .venv\Scripts\python mcp\toolcall_proxy.py" }
+    if ($started) {
+        try {
+            $cmd = Register-BridgeAtLogon
+            Ok "bridge auto-starts at logon ($cmd)"
+        } catch { Skip "bridge logon autostart ($_) - start it manually" }
+    }
+} else { Skip "bridge (no venv)" }
+
+# --------------------------------------------------------------------------- #
 Step "8/8  verification"
 if (Test-Path $venvPy) {
     & $venvPy mcp\smoke_test.py
     if ($LASTEXITCODE -eq 0) { Ok "tool server smoke test" } else { Bad "smoke test" }
 }
+if (Bridge-Up) { Ok "bridge answers on 127.0.0.1:$BridgePort" }
+else { Bad "bridge not answering on $BridgePort" }
 if ($ollama) {
     Info "GPU check — PROCESSOR column should show GPU:"
     & $ollama ps
@@ -318,6 +381,7 @@ if ($script:Fail -eq 0) {
     Write-Host '    dsh --profile headless "..."    # one-shot'
     Write-Host "    ollama run $Model   # direct"
     Write-Host ""
+    Write-Host "  Bridge: 127.0.0.1:$BridgePort (starts at logon via Startup\oqvian-bridge.cmd)"
     Write-Host "  Scope:  $HOME\.config\oqvian\scope.json"
     Write-Host "  Audit:  $HOME\.local\share\oqvian\audit.jsonl"
 } else {
