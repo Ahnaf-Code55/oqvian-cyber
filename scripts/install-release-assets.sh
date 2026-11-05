@@ -3,14 +3,14 @@
 # without touching HuggingFace or npm.
 #
 #   ./scripts/install-release-assets.sh
-#   ./scripts/install-release-assets.sh --tag v1.0.0
+#   ./scripts/install-release-assets.sh --tag v1.1.0
 #   ./scripts/install-release-assets.sh --models-only
 #   ./scripts/install-release-assets.sh --harness-only
 #   ./scripts/install-release-assets.sh --from-dir ~/oq-rel
 #
 # What it does:
 #   1. downloads the split model archive, reassembles it, extracts the Ollama
-#      store into ~/.ollama/models  (5 OQVIAN models + nomic-embed-text)
+#      store into ~/.ollama/models  (OQVIAN v1.1 + nomic-embed-text)
 #   2. optionally installs @deepseek-ai/dsh@0.1.1-rc.2 from the shipped npm
 #      cache, fully offline
 #
@@ -34,7 +34,7 @@ case "$REPO" in
   */*) : ;;
   *)   REPO="Ahnaf-Code55/oqvian-cyber" ;;
 esac
-TAG="v1.0.0"
+TAG="v1.1.0"
 DO_MODELS=1
 DO_HARNESS=1
 FROM_DIR=""

@@ -117,7 +117,7 @@ bash install.sh --with-root      # also install the BlackArch root toolset (sudo
 
 `install-release-assets.sh` is not optional in practice. It fetches the Ollama
 store this repository publishes, which already carries the Qwen2.5 tool-calling
-template and the five role system prompts. Pulling the upstream GGUF instead
+template and the unified OQVIAN system prompt. Pulling the upstream GGUF instead
 gives you a model that cannot call tools — see [`AI-HANDOFF.md`](AI-HANDOFF.md)
 §12.1.
 
@@ -172,11 +172,11 @@ bash scripts/install-release-assets.sh
 bash install.sh
 ```
 
-**Release assets** (`v1.0.0`):
+**Release assets** (`v1.1.0`):
 
 | Asset | Size | Contents |
 |---|---|---|
-| `oqvian-models-*.tar.part-00…02` | 4.7 GB | Ollama store: 5 OQVIAN models + nomic-embed-text, tool template baked in |
+| `oqvian-models-*.tar.part-aa…ac` | 4.7 GB | Ollama store: OQVIAN-CYBER-CONTROL-FULL UNLOCKED v1.1 + nomic-embed-text, tool template baked in |
 | `oqvian-models-*.sha256` | 300 B | per-part checksums |
 | `oqvian-harness-*-npm-cache.tar` | 195 MB | primed npm cache for `@deepseek-ai/dsh@0.1.1-rc.2`, linux-x64 **and** win32-x64 |
 
@@ -184,7 +184,7 @@ bash install.sh
 over, then point the installer at the directory:
 
 ```bash
-gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel   # connected box
+gh release download v1.1.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel   # connected box
 bash scripts/install-release-assets.sh --from-dir ./oq-rel                  # target box
 ```
 

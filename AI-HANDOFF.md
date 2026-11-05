@@ -159,20 +159,20 @@ cd "$HOME\oqvian-cyber"
 
 ### 3.3 Get the built models and harness
 
-**Do this before `install.ps1`.** Downloads ~4.9 GB: the five already-built models
+**Do this before `install.ps1`.** Downloads ~4.8 GB: the already-built model
 and a primed npm cache. No HuggingFace, no npm registry.
 
 ```powershell
 $Rel = "$HOME\oq-rel"
 New-Item -ItemType Directory -Force -Path $Rel | Out-Null
-gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber --dir $Rel --clobber
+gh release download v1.1.0 --repo Ahnaf-Code55/oqvian-cyber --dir $Rel --clobber
 ```
 
 If `gh` is not installed, use `git`'s credential and the API instead:
 
 ```powershell
 $h = @{ Authorization = "Bearer $env:GH_TOKEN" }
-Invoke-RestMethod "https://api.github.com/repos/Ahnaf-Code55/oqvian-cyber/releases/tags/v1.0.0" -Headers $h |
+Invoke-RestMethod "https://api.github.com/repos/Ahnaf-Code55/oqvian-cyber/releases/tags/v1.1.0" -Headers $h |
   Select-Object -ExpandProperty assets |
   ForEach-Object {
     Invoke-WebRequest $_.url -Headers ($h + @{ Accept = "application/octet-stream" }) -OutFile "$Rel\$($_.name)"

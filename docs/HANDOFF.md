@@ -74,7 +74,7 @@ The release assets are also how you provision a machine with no route out. On a
 connected machine:
 
 ```bash
-gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel
+gh release download v1.1.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel
 ```
 
 Carry `oq-rel/` over on a USB stick, then on the target:
