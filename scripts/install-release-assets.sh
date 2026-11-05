@@ -44,17 +44,26 @@ die()  { printf '  FAIL %s\n' "$*" >&2; exit 1; }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/oqvian-rel.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# Only pull the assets the requested mode needs, so --harness-only does not sit
+# through a 4.7 GB model download it is going to ignore.
+PATTERNS=()
+[ "$DO_MODELS"  -eq 1 ] && PATTERNS+=("oqvian-models-*")
+[ "$DO_HARNESS" -eq 1 ] && PATTERNS+=("oqvian-harness-*")
+
 # Prefer gh (handles the private repo's auth for us); fall back to curl+token.
 fetch_release() {
   if command -v gh >/dev/null 2>&1; then
-    gh release download "$TAG" --repo "$REPO" --dir "$TMP" --clobber
+    gh release download "$TAG" --repo "$REPO" --dir "$TMP" --clobber \
+      $(for p in "${PATTERNS[@]}"; do printf -- '--pattern %s ' "$p"; done)
   else
     [ -n "${GH_TOKEN:-}" ] || die "install gh, or export GH_TOKEN=<token with repo scope>"
     api="https://api.github.com/repos/$REPO/releases/tags/$TAG"
     curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api" \
       | python3 -c 'import json,sys
+pats = sys.argv[1:]
 for a in json.load(sys.stdin)["assets"]:
-    print(a["name"], a["url"])' \
+    if any(__import__("fnmatch").fnmatch(a["name"], p) for p in pats):
+        print(a["name"], a["url"])' "${PATTERNS[@]}" \
       | while read -r name url; do
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
                -H "Accept: application/octet-stream" -o "$TMP/$name" "$url"
