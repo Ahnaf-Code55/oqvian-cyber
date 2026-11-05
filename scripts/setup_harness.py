@@ -127,7 +127,14 @@ def write_settings() -> None:
         # Ollama ignores auth, so a static bearer token satisfies the client
         # without requiring an API-key env var on the CISO's machine.
         "      headers:\n"
-        "        Authorization: Bearer ollama\n" + models
+        "        Authorization: Bearer ollama\n"
+        # The default idle timeout is 300 s. A local model on a CPU box can
+        # spend longer than that evaluating the prompt before emitting its
+        # first token, and the harness kills the stream with
+        # "pi-ai stream idle timeout after 300000ms" before any output exists.
+        # GPU machines never hit this; CPU ones always do.
+        "      streamIdleTimeoutMs: 1800000\n"
+        "      timeoutMs: 3600000\n" + models
     )
 
     if "ollama-local:" in s:
