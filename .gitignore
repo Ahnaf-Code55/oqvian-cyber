@@ -1,0 +1,34 @@
+# OQVIAN — build artefacts and machine-local state
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# generated index (rebuild with: .venv/bin/python ingest.py)
+index/
+
+# corpus sources (rebuild with: ./refresh-corpus.sh)
+corpus/raw/
+
+# cloned/prebuilt tool sources (rebuild with: ./install-tools.sh)
+tools/
+
+# per-machine hardware profile
+hardware.env
+
+# generated model modelfiles
+models/Modelfile.base.built
+models/*.built
+models/.base.raw
+
+# handoff bundles
+dist/
+ollama-models/
+
+# machine-local authorisation state — belongs to whoever ran the engagement
+scope.json
+audit.jsonl
+
+# settings backups
+*.bak.*

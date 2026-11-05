@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# OQVIAN launcher — starts the local model service, then the harness UI.
+set -u
+systemctl --user start ollama.service 2>/dev/null || true
+for i in $(seq 1 20); do
+  curl -sf -m 1 http://127.0.0.1:11434/ >/dev/null && break
+  sleep 0.3
+done
+export PATH="$HOME/.local/bin:$PATH"
+exec dsh web "$@"

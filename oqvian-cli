@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# OQVIAN one-shot CLI: oqvian-cli "question or task"
+#
+# Non-interactive sessions cannot answer an approval prompt, so headless runs
+# use the auto-approve preset. The authorisation control that remains in force
+# is the scope file (~/.config/oqvian/scope.json), enforced inside the tool
+# server, plus the audit log. Use the web UI (`oqvian`) when you want to approve
+# each action by hand.
+set -u
+systemctl --user start ollama.service 2>/dev/null || true
+
+export PATH="$HOME/.local/bin:$PATH"
+export DSH_PERMISSION_MODE="${DSH_PERMISSION_MODE:-danger-full-access}"
+
+printf '\033[33m[oqvian-cli] auto-approve mode — tool calls are not prompted.\033[0m\n' >&2
+printf '\033[33m[oqvian-cli] scope: %s\033[0m\n' "${HOME}/.config/oqvian/scope.json" >&2
+
+exec dsh --profile headless "$@"
