@@ -18,9 +18,9 @@ tools/
 hardware.env
 
 # generated model modelfiles
-models/Modelfile.base.built
+models/Modelfile.unlocked.built
 models/*.built
-models/.base.raw
+models/.unlocked.raw
 
 # handoff bundles
 dist/
@@ -32,3 +32,6 @@ audit.jsonl
 
 # settings backups
 *.bak.*
+
+# refusal-eval run outputs
+eval/report*.json

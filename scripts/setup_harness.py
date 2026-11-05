@@ -24,11 +24,7 @@ from pathlib import Path
 DSH_HOME = Path(os.environ.get("DSH_HOME") or Path.home() / ".dsh")
 
 MODELS = [
-    ("oqvian:latest", "OQVIAN Defensive/Offensive 7B"),
-    ("oqvian-ciso:latest", "OQVIAN CISO Advisor"),
-    ("oqvian-offensive:latest", "OQVIAN Red Team"),
-    ("oqvian-defensive:latest", "OQVIAN Blue Team"),
-    ("oqvian-ir:latest", "OQVIAN Incident Response"),
+    ("oqvian-cyber-control-full-unlocked-v1.1:latest", "OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1"),
 ]
 
 PATCH = """\
@@ -146,7 +142,7 @@ def write_settings() -> None:
 
     s = re.sub(
         r"(agent-default-model:\n  provider: ).*\n  model: .*\n",
-        r"\1ollama-local\n  model: oqvian:latest\n",
+        r"\1ollama-local\n  model: oqvian-cyber-control-full-unlocked-v1.1:latest\n",
         s,
         count=1,
     )

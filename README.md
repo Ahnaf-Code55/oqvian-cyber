@@ -45,7 +45,7 @@ third party.
         │
 ┌───────▼──────────────────────────────────────────────────────────┐
 │  Ollama (GPU offload where available)                            │
-│  oqvian  oqvian-ciso  oqvian-offensive  oqvian-defensive  oqvian-ir│
+│  OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1 — one abliterated model   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -55,17 +55,19 @@ third party.
 
 ---
 
-## Models
+## Model
 
-| Model | Use |
+**OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1** — the single model.
+
+| | |
 |---|---|
-| `oqvian:latest` | general defensive/offensive |
-| `oqvian-ciso:latest` | board/exec briefings, risk, compliance mapping |
-| `oqvian-offensive:latest` | red team, ATT&CK-mapped operations |
-| `oqvian-defensive:latest` | detection engineering, hardening, triage |
-| `oqvian-ir:latest` | incident response, forensics, PICERL |
+| Ollama id | `oqvian-cyber-control-full-unlocked-v1.1:latest` |
+| Use | offensive, defensive, IR and CISO-level output in one persona |
 
-All are 7.61B parameters, Q4_K_M, 16K context, sharing one 4.4 GB set of weights.
+OQVIAN is **one model**. It is a 7.6B Q4_K_M security base with the refusal reflex
+removed (abliterated) and a unified operator/CISO persona, 16K context, with the
+Qwen2.5 tool template so it can drive the tool surface. See
+[`docs/MODEL.md`](docs/MODEL.md).
 
 ### Target hardware
 
@@ -133,7 +135,7 @@ any failure and it resumes:
    `OLLAMA_NUM_GPU` on NVIDIA/AMD).
 2. base packages, Python venv, `requirements.txt`.
 3. Ollama install/start + a systemd drop-in carrying the GPU and KV-cache env.
-4. `models/build-models.sh` — 5 models with the tool template.
+4. `models/build-models.sh` — the single OQVIAN model with the tool template.
 5. `refresh-corpus.sh` + `ingest.py` — corpus download, FTS5 index.
 6. `install-tools.sh` — Kali-class userland toolchain.
 7. `install-root-tools.sh` — only with `--with-root`.
@@ -222,7 +224,7 @@ oqvian-repl                  # multi-turn chat, /help, /models, /status, /reset,
 oqvian-cli "Map T1059.001 to Sigma rules we can deploy"
 
 # direct model, no harness
-ollama run oqvian-ciso
+ollama run oqvian-cyber-control-full-unlocked-v1.1
 
 # health
 systemctl --user status ollama

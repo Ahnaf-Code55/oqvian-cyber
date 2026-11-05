@@ -18,7 +18,7 @@ Three layers, and **all three must be present** or the stack fails silently:
 
 | Layer | What | Where |
 |---|---|---|
-| **Model** | WhiteRabbitNeo 2.5 (a Qwen2.5-Coder-7B fine-tune), renamed OQVIAN | Ollama on `127.0.0.1:11434` |
+| **Model** | OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1 (Qwen2.5-7B-Instruct, abliterated) | Ollama on `127.0.0.1:11434` |
 | **Harness** | `@deepseek-ai/dsh` — the UI, the tool loop, the model routing | `npm i -g @deepseek-ai/dsh@0.1.1-rc.2` |
 | **Tool server** | `mcp/server.py` — 5 tools the model calls itself | spawned by the harness over stdio |
 
@@ -49,7 +49,7 @@ ollama show oqvian --template | grep -c '.Tools'   # must be 3
 
 **Consequence, and this is the most common failure in the whole project:**
 pulling the upstream fine-tune from HuggingFace gives you the *unmodified*
-weights — no `.Tools`, no OQVIAN system prompt, no role models. It still
+weights — no `.Tools` and no OQVIAN system prompt. It still
 answers questions. So the weights ship as **release assets** (already built),
 not as a download reference. `AI-HANDOFF.md` §12.1 forbids `ollama pull` for
 exactly this reason, and §2.3/§3.3 fetch the built artefacts.
@@ -57,26 +57,26 @@ exactly this reason, and §2.3/§3.3 fetch the built artefacts.
 **If your change produces a model that answers but never calls a tool, this is
 almost certainly the cause. Re-extract the release models; do not rebuild.**
 
-### There are five models, not one
+### There is one model, not five
 
 ```
-oqvian:latest                  (alias oqvian:defensive-offensive)
-oqvian-ciso / -offensive / -defensive / -ir
+oqvian-cyber-control-full-unlocked-v1.1:latest
+  display: OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1
 ```
 
-The role models are **thin entry points**: same 4.7 GB of blobs, ~4 KB of
-manifest each. The only differences are the SYSTEM prompt and the temperature.
-One loaded at a time.
+There is exactly one model. There used to be five (a base plus four role entry
+points); they were retired for a single unified persona, because the role split
+added a selection step without adding capability. One model, one persona, one
+tool template — temperature 0.35, num_ctx 16384.
 
-| Model | Temperature | Job |
-|---|---|---|
-| `oqvian:latest` | 0.4 | general offensive + defensive engineer |
-| `oqvian-ciso` | 0.35 | board/risk translation, framework mapping (NIST CSF 2.0, ISO 27001:2022, PCI DSS 4.0…) |
-| `oqvian-offensive` | 0.3 | red team |
-| `oqvian-defensive` | 0.3 | blue team |
-| `oqvian-ir` | 0.25 | incident response |
+| Capability | Value |
+|---|---|
+| model | `oqvian-cyber-control-full-unlocked-v1.1` |
+| temperature | 0.35 |
+| context | num_ctx 16384 (32K native) |
 
-Sources: `models/Modelfile.{base,ciso,offensive,defensive,ir}`.
+Sources: `models/Modelfile.unlocked` (persona) + `models/qwen-tools.template`
+(tool template), composed by `models/build-models.sh`.
 
 ---
 
@@ -86,7 +86,7 @@ The model sees exactly five tools. Internally there are 22 functions dispatched
 through `action` / `tool` enums. **If you rename or add operations, update the
 Modelfiles in the same commit** — stale names in the system prompt are how the
 model starts calling things that do not exist. (This bug already bit once:
-role Modelfiles referenced `rag_search`, `run_tool`, `atomic_lookup`, `dns_enum`,
+an early Modelfile referenced `rag_search`, `run_tool`, `atomic_lookup`, `dns_enum`,
 none of which are in the 5-tool surface.)
 
 `tools.*` names in the harness are `mcp__oqvian__<tool>`.
@@ -259,10 +259,10 @@ Details worth knowing if you modify this:
   scratch and fails on a small tmpfs. Streaming needs ~10 GB total (parts +
   extracted blobs). The Windows path uses `type part-* | tar -xf -`, with
   `copy /b` kept as an explicit fallback.
-- Both installers **detect** the extracted models (template present, no stale
-  tool names, all five present) and verify instead of rebuilding. Rebuilding
-  would resolve the upstream `FROM hf.co/bartowski/…` reference, which fails on
-  an offline machine — that was a real bug.
+- Both installers **detect** the extracted model (template present, no stale
+  tool names) and verify instead of rebuilding. Rebuilding would resolve the
+  upstream `FROM hf.co/mradermacher/…` reference, which fails on an offline
+  machine — that was a real bug.
 - `--os=win32 --cpu=x64` was used to prime the npm cache so the Windows install
   works offline too; verified with `--offline`, 449 packages, Windows `.node`
   binaries present. **A Linux-only cache would still send the Windows user to
@@ -280,7 +280,7 @@ release **assets**, never in git.
 | Pulling the upstream GGUF | Model answers, never calls a tool; looks healthy | §2 of this file. Re-extract the release models |
 | Editing a profile `.yml` to add a provider `config:` | Patch is a single `- insert:` list; the config never lands | Provider settings live in `~/.dsh/settings.yaml`, written by `setup_harness.py` |
 | `- insert:` vs `- update:` in a profile patch | Wrong verb overwrites the whole row's config | Composition replaces the whole row `config`; it does not merge |
-| Renaming an MCP operation | Role Modelfiles now name tools that do not exist | Update `models/Modelfile.*` in the same commit |
+| Renaming an MCP operation | The Modelfile now names tools that do not exist | Update `models/Modelfile.unlocked` in the same commit |
 | `DSH_PERMISSION_MODE=danger-full-access` on the web UI | UI stops prompting for tool calls | Only `oqvian-cli` sets it; web keeps `ask` |
 | `modelRoutes: [ollama-local]` under `agent-default-model` | Already in `settings.yaml`; harmless but redundant | Leave it, or remove it — do not "fix" anything else to chase it |
 | `timeoutMs` under the provider | In the schema, never read | Ignore; `streamIdleTimeoutMs` is the lever |
@@ -313,7 +313,7 @@ release **assets**, never in git.
 ## 9. How we validated
 
 ```bash
-ollama show <m> --template | grep -c '.Tools'    # 3 on all five models
+ollama show <m> --template | grep -c '.Tools'    # 3 on the OQVIAN model
 .venv/bin/python mcp/smoke_test.py               # 19/19
 bash install.sh --status                          # 9 components "yes"
 cat part-* | sha256sum                            # matches the source tar
@@ -336,7 +336,7 @@ from. The `.Tools` count is the proof that matters.
 | `mcp/server.py` | 5 tools, 22 internals, scope + audit, FTS5/hybrid |
 | `mcp/smoke_test.py` | 19 checks, no model involved |
 | `models/build-models.sh` | Installs the tool template; early-exits when models are already built |
-| `models/Modelfile.{base,ciso,offensive,defensive,ir}` | base prompt + 4 role prompts |
+| `models/Modelfile.unlocked` | the unified operator/CISO prompt |
 | `models/qwen-tools.template` | The Qwen2.5 tool template. **This is the file that makes tools work** |
 | `install.sh` | 8-stage orchestrator, `--status`, `--no-tools/--no-model/--no-index/--with-root` |
 | `deploy/windows/install.ps1` | CISO-laptop installer incl. Vulkan and model detection (**unexecuted — see §8**) |

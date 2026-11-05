@@ -16,10 +16,10 @@ the user to paste it, or to run the commands and paste the output back.
 Three things that must all be present, because each one silently ruins the
 stack if missing:
 
-1. **The model** — WhiteRabbitNeo 2.5 (a Qwen2.5-Coder-7B fine-tune), renamed
-   OQVIAN, served by Ollama on `127.0.0.1:11434`. It is **our build**, not the
-   upstream download: the tool-calling template and the five role system prompts
-   are baked in. §2.3 fetches it from this repository's release. Read §12.1
+1. **The model** — OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1 (Qwen2.5-7B-Instruct,
+   abliterated), served by Ollama on `127.0.0.1:11434`. It is **our build**, not
+   the upstream download: the tool-calling template and the unified operator
+   system prompt are baked in. §2.3 fetches it from this repository's release. Read §12.1
    before considering any other source.
 2. **The harness** — `@deepseek-ai/dsh` at exactly `0.1.1-rc.2`, which gives the
    model a browser UI and a tool loop.
@@ -86,8 +86,7 @@ bash scripts/install-release-assets.sh
 ```
 
 **Expect:** three parts downloaded, `checksums match`, then an `ollama list`
-showing `oqvian:latest`, `oqvian:defensive-offensive`, `oqvian-ciso`,
-`oqvian-offensive`, `oqvian-defensive`, `oqvian-ir` and `nomic-embed-text`, then
+showing `oqvian-cyber-control-full-unlocked-v1.1` and `nomic-embed-text`, then
 `dsh 0.1.1-rc.2`.
 
 Takes 5–20 minutes depending on bandwidth. If it stops with
@@ -268,15 +267,15 @@ ollama show oqvian --template | grep -c '.Tools'
 **Expect: `3`.** If you see `0`, something overwrote `oqvian` with the upstream
 model. Do not proceed — re-extract the release models and re-check.
 
-Check all five at once:
+Check the model's tool template:
 
 ```bash
-for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
-  printf '%-20s %s\n' "$m" "$(ollama show "$m" --template | grep -c '.Tools')"
+for m in oqvian-cyber-control-full-unlocked-v1.1; do
+  printf '%-40s %s\n' "$m" "$(ollama show "$m" --template | grep -c '.Tools')"
 done
 ```
 
-**Expect** `3` on every line. Only if a line shows `0`, rebuild it locally:
+**Expect** `3` on the line. Only if it shows `0`, rebuild it locally:
 
 ```bash
 bash models/build-models.sh
@@ -438,11 +437,11 @@ cosmetics around that.
 ### 12.1 Never `ollama pull` the upstream model
 
 ```bash
-ollama pull hf.co/bartowski/WhiteRabbitNeo-2.5-Qwen-2.5-Coder-7B-GGUF:Q4_K_M   # NO
+ollama pull hf.co/mradermacher/Qwen2.5-7B-Instruct-abliterated-GGUF:Q4_K_M   # NO
 ```
 
-That fetches the **unmodified** fine-tune. It has no `.Tools` block, no OQVIAN
-system prompt, and none of the five role models. It answers questions and looks
+That fetches the **unmodified** abliterated base. It has no `.Tools` block and no
+OQVIAN system prompt. It answers questions and looks
 healthy while being unable to call a single tool — the failure this stack exists
 to avoid. Everything we changed lives in the Ollama model manifests and the chat
 template, and those are only in the release assets.

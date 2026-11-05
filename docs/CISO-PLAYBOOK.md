@@ -1,9 +1,12 @@
 # OQVIAN CISO playbook
 
-Ready-to-run prompts for the work a CISO actually does. Each one names the model
-to pick in the harness, the tools OQVIAN will call, and what the output should
-look like. Paste the prompt as-is — the agent instructions make it retrieve from
-the local knowledge base before answering.
+Ready-to-run prompts for the work a CISO actually does. Each one names the tools
+OQVIAN will call and what the output should look like. Paste the prompt as-is —
+the agent instructions make it retrieve from the local knowledge base before
+answering.
+
+Every prompt runs on the **single** OQVIAN model
+(`oqvian-cyber-control-full-unlocked-v1.1`); there is no role model to pick.
 
 Replace the bracketed parts. Everything runs offline.
 
@@ -11,7 +14,7 @@ Replace the bracketed parts. Everything runs offline.
 
 ## 1. Morning exposure check
 
-**Model:** `oqvian-ciso` · **Tools:** `kb` (kev, cve)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (kev, cve)
 
 ```
 We run [product/version list]. Search the CISA KEV catalogue for vulnerabilities
@@ -28,7 +31,7 @@ Why it works: `kb(action="kev")` searches the local 1,768-entry KEV catalogue, s
 
 ## 2. Board one-pager
 
-**Model:** `oqvian-ciso` · **Tools:** `kb` (search)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (search)
 
 ```
 Write a board update on [topic: e.g. ransomware exposure / MFA rollout / third
@@ -42,7 +45,7 @@ NIST CSF 2.0 functions and name the ISO 27001:2022 Annex A control IDs.
 
 ## 3. Compliance mapping without a consultant
 
-**Model:** `oqvian-ciso` · **Tools:** `kb` (search, attack)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (search, attack)
 
 ```
 Map our current controls to NIST 800-53 Rev 5 for the [AC, AU, IR, SC] families.
@@ -62,7 +65,7 @@ command that verifies it. Prefer what we can automate.
 
 ## 4. CVE triage that survives scrutiny
 
-**Model:** `oqvian-defensive` · **Tools:** `kb` (cve, kev, detection)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (cve, kev, detection)
 
 ```
 Triage CVE-[id]. Give me: CVSS and vector, whether it is in KEV and since when,
@@ -76,7 +79,7 @@ with compensating control, not applicable — and justify it in two sentences.
 
 ## 5. Detection engineering, end to end
 
-**Model:** `oqvian-defensive` · **Tools:** `kb` (detection, atomic, attack)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (detection, atomic, attack)
 
 ```
 Write a Sigma rule for [behaviour, e.g. LSASS access via comsvcs.dll MiniDump].
@@ -93,7 +96,7 @@ validation step, not a suggestion.
 
 ## 6. First hour of an incident
 
-**Model:** `oqvian-ir` · **Tools:** `kb` (attack, detection)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (attack, detection)
 
 ```
 We have [alert: e.g. EDR flagged Cobalt Strike beacon on FIN-LAPTOP-14]. Give me
@@ -115,7 +118,7 @@ explanation looks like, and the pivot that confirms or kills the hypothesis.
 
 ## 7. External attack surface review
 
-**Model:** `oqvian-offensive` · **Tools:** `recon`, `execute`
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `recon`, `execute`
 
 > Only after adding the domain to `~/.config/oqvian/scope.json`.
 
@@ -142,7 +145,7 @@ Every call is scope-checked and appended to
 
 ## 8. Third-party / vendor risk
 
-**Model:** `oqvian-ciso` · **Tools:** `kb` (search)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (search)
 
 ```
 Assess [vendor] from this evidence: [SOC 2 report summary / questionnaire
@@ -156,7 +159,7 @@ three contract clauses I should insist on.
 
 ## 9. Purple-team exercise design
 
-**Model:** `oqvian-offensive` · **Tools:** `kb` (attack, atomic, detection), `execute`
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (attack, atomic, detection), `execute`
 
 ```
 Design a two-day purple-team exercise against [scenario: e.g. initial access via
@@ -170,7 +173,7 @@ deconfliction contact. No action outside the scope file.
 
 ## 10. Metrics the board will actually read
 
-**Model:** `oqvian-ciso`
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1`
 
 ```
 Turn these raw numbers into four metrics a board can act on: [MTTD, MTTR, patch
@@ -183,7 +186,7 @@ it becomes a board item. Reject any metric that cannot change a decision.
 
 ## 11. Policy and exception writing
 
-**Model:** `oqvian-ciso` · **Tools:** `kb` (search)
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1` · **Tools:** `kb` (search)
 
 ```
 Draft a [cloud usage / AI tool usage / privileged access] policy: scope, the
@@ -197,7 +200,7 @@ the rule and an auditor can test it.
 
 ## 12. What did we learn
 
-**Model:** `oqvian-ir`
+**Model:** `oqvian-cyber-control-full-unlocked-v1.1`
 
 ```
 Post-incident review for [incident]. Separate what happened from what we believed
@@ -211,9 +214,9 @@ training".
 
 ## Operating habits
 
-- **Pick the role model, not the general one.** The system prompts differ enough
-  to change output shape: `oqvian-ciso` gives you decision framing, `oqvian-defensive`
-  gives you rule syntax, `oqvian-ir` gives you phase structure.
+- **One model, no role juggling.** The single unified persona already covers
+  decision framing, rule syntax and incident phase structure — ask for the shape
+  you want in the prompt, not by switching models.
 - **Ask for the reference ID.** If the answer has no `T####`, `CVE-`, `CWE-` or
   rule title, the model did not retrieve — treat the answer as unverified.
 - **One decision per session.** The 16K context is real; long sessions lose the

@@ -17,8 +17,7 @@ see 2–4 tok/s — the difference is obvious within one prompt, see
 | Component | Where | Size |
 |---|---|---|
 | Ollama (Windows service) | `%LOCALAPPDATA%\Programs\Ollama` | 700 MB |
-| Base model (WhiteRabbitNeo 2.5, Q4_K_M) | `%USERPROFILE%\.ollama\models` | 4.7 GB |
-| 4 role models (same layers, new prompts) | same store, shared blobs | ~0 |
+| Model (OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1, Q4_K_M) | `%USERPROFILE%\.ollama\models` | 4.7 GB |
 | Knowledge index (10,932 passages) | `%USERPROFILE%\oqvian-cyber\index` | 120 MB |
 | Corpus sources | `%USERPROFILE%\oqvian-cyber\corpus\raw` | 1.6 GB |
 | Python venv + MCP server | `%USERPROFILE%\oqvian-cyber\.venv` | 90 MB |
@@ -57,7 +56,7 @@ Then start it:
 ```powershell
 oqvian            # web UI
 oqvian-cli "Map T1059.001 to Sigma rules we can deploy"
-ollama run oqvian-ciso
+ollama run oqvian-cyber-control-full-unlocked-v1.1
 ```
 
 ---
@@ -123,7 +122,7 @@ speed benefit. Lowering context to 8K frees ~0.5 GB of KV cache and pushes more
 layers onto the GPU:
 
 ```powershell
-ollama run oqvian --parameter num_ctx 8192
+ollama run oqvian-cyber-control-full-unlocked-v1.1 --parameter num_ctx 8192
 ```
 
 16K with `q8_0` KV (~28 KB/token, ≈0.45 GB) is the default the installer sets;
@@ -263,7 +262,7 @@ AV ignores is itself a control decision.
 
 ```powershell
 # models
-ollama rm oqvian oqvian:defensive-offensive oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir
+ollama rm oqvian-cyber-control-full-unlocked-v1.1 oqvian oqvian:defensive-offensive oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir
 # harness
 npm uninstall -g @deepseek-ai/dsh
 # everything else is inside these two directories

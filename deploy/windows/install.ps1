@@ -3,8 +3,8 @@
     OQVIAN installer for Windows (CISO laptop: i7 11th gen, 16 GB, Iris Xe MAX).
 
 .DESCRIPTION
-    Sets up, in order: hardware probe, Ollama + Intel GPU offload, the five
-    OQVIAN models with the Qwen2.5 tool-calling template, the knowledge corpus
+    Sets up, in order: hardware probe, Ollama + Intel GPU offload, the single
+    OQVIAN model with the Qwen2.5 tool-calling template, the knowledge corpus
     and FTS5 index, the deepseek harness, the MCP tool server wiring, and a
     smoke test. Idempotent — safe to re-run.
 
@@ -29,6 +29,9 @@ $ProgressPreference = "SilentlyContinue"
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Root
+
+# The single OQVIAN model. One model, one persona, one tool template.
+$Model = "oqvian-cyber-control-full-unlocked-v1.1"
 
 $script:Ok = 0
 $script:Skip = 0
@@ -161,58 +164,51 @@ if ($up) { Ok "API answers on 127.0.0.1:11434" } else { Bad "API not answering �
 
 # --------------------------------------------------------------------------- #
 if (-not $SkipModel -and $ollama) {
-    Step "4/8  models (base 4.7 GB + 4 role models, shared layers)"
+    Step "4/8  model (single, ~4.7 GB)"
 
-    # Models extracted from the release already carry the template and the
-    # current system prompt. Rebuilding them would make Ollama resolve the
+    # The model extracted from the release already carries the template and the
+    # current system prompt. Rebuilding it would make Ollama resolve the
     # upstream GGUF reference, which fails on an offline machine.
     $present = $true
-    foreach ($m in @("oqvian","oqvian-ciso","oqvian-offensive","oqvian-defensive","oqvian-ir")) {
-        & $ollama show $m --modelfile 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0) { $present = $false }
-    }
-    $refs = (& $ollama show oqvian --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
+    & $ollama show $Model --modelfile 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { $present = $false }
+    $refs = (& $ollama show $Model --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
     if ($present -and $refs -ge 1) {
-        Ok "models already built with the tool template — nothing to rebuild"
+        Ok "$Model already built with the tool template — nothing to rebuild"
         Step "4b/8  verify tool template"
-        foreach ($m in @("oqvian","oqvian-ciso","oqvian-offensive","oqvian-defensive","oqvian-ir")) {
-            $n = (& $ollama show $m --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
-            if ($n -ge 1) { Ok "$m tool template ($n refs)" } else { Bad "$m has no .Tools block" }
-        }
+        $n = (& $ollama show $Model --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
+        if ($n -ge 1) { Ok "$Model tool template ($n refs)" } else { Bad "$Model has no .Tools block" }
         $SkipModel = $true
     }
 }
 
 if (-not $SkipModel -and $ollama) {
-    $base = Join-Path $Root "models\Modelfile.base"
+    $base = Join-Path $Root "models\Modelfile.unlocked"
     $tpl  = Join-Path $Root "models\qwen-tools.template"
     if (-not (Test-Path $base) -or -not (Test-Path $tpl)) {
-        Bad "models\Modelfile.base or qwen-tools.template missing"
+        Bad "models\Modelfile.unlocked or qwen-tools.template missing"
     } else {
-        # base Modelfile has FROM + PARAMETER + SYSTEM, no TEMPLATE.
+        # Modelfile.unlocked has FROM + PARAMETER + SYSTEM, no TEMPLATE.
         # Append the official Qwen2.5 tool template so Ollama renders tool schemas.
         $built = (Get-Content -Raw $base).TrimEnd() + "`r`n`r`n" +
                  'TEMPLATE """' + "`r`n" +
                  (Get-Content -Raw $tpl).TrimEnd() + "`r`n" + '"""' + "`r`n"
-        $builtPath = Join-Path $Root "models\Modelfile.base.built"
+        $builtPath = Join-Path $Root "models\Modelfile.unlocked.built"
         [System.IO.File]::WriteAllText($builtPath, $built, (New-Object System.Text.UTF8Encoding($false)))
 
-        & $ollama create oqvian -f $builtPath | Out-Null
-        if ($LASTEXITCODE -eq 0) { Ok "base model oqvian (GGUF pull on first run)" } else { Bad "ollama create oqvian" }
-        & $ollama cp oqvian oqvian:defensive-offensive | Out-Null
+        & $ollama create $Model -f $builtPath | Out-Null
+        if ($LASTEXITCODE -eq 0) { Ok "$Model (GGUF pull on first run)" } else { Bad "ollama create $Model" }
 
-        foreach ($r in @("ciso","offensive","defensive","ir")) {
-            & $ollama create "oqvian-$r" -f (Join-Path $Root "models\Modelfile.$r") | Out-Null
-            if ($LASTEXITCODE -eq 0) { Ok "oqvian-$r" } else { Bad "oqvian-$r" }
+        # Prune retired multi-persona / pre-rename builds so exactly one remains.
+        foreach ($m in @("oqvian","oqvian-ciso","oqvian-offensive","oqvian-defensive","oqvian-ir")) {
+            & $ollama rm $m 2>$null | Out-Null
         }
 
         Step "4b/8  verify tool template"
-        foreach ($m in @("oqvian","oqvian-ciso","oqvian-offensive","oqvian-defensive","oqvian-ir")) {
-            $n = (& $ollama show $m --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
-            if ($n -ge 1) { Ok "$m tool template ($n refs)" } else { Bad "$m has no .Tools block" }
-        }
+        $n = (& $ollama show $Model --template 2>$null | Select-String -Pattern '\.Tools' -AllMatches | Measure-Object).Count
+        if ($n -ge 1) { Ok "$Model tool template ($n refs)" } else { Bad "$Model has no .Tools block" }
     }
-} elseif (-not $SkipModel) { Step "4/8  models"; Skip "models (no ollama)" }
+} elseif (-not $SkipModel) { Step "4/8  model"; Skip "model (no ollama)" }
 
 # --------------------------------------------------------------------------- #
 if (-not $SkipIndex) {
@@ -318,9 +314,9 @@ Write-Host "  ok $script:Ok   skipped $script:Skip   failed $script:Fail"
 Write-Host ""
 if ($script:Fail -eq 0) {
     Write-Host "  Ready." -ForegroundColor Green
-    Write-Host "    dsh web                        # UI, pick OQVIAN or a role model"
+    Write-Host "    dsh web                        # UI, the OQVIAN model"
     Write-Host '    dsh --profile headless "..."    # one-shot'
-    Write-Host "    ollama run oqvian-ciso         # direct"
+    Write-Host "    ollama run $Model   # direct"
     Write-Host ""
     Write-Host "  Scope:  $HOME\.config\oqvian\scope.json"
     Write-Host "  Audit:  $HOME\.local\share\oqvian\audit.jsonl"

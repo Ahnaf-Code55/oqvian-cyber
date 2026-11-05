@@ -59,7 +59,7 @@ if [ "$STATUS" -eq 1 ]; then
     O="${OLLAMA_BIN:-$(have ollama && command -v ollama || echo "$HOME/ollama")}"
     echo "  models installed:"
     "$O" list 2>/dev/null | sed 's/^/    /' | head -10
-    n=$("$O" show oqvian --template 2>/dev/null | grep -c '\.Tools' || true)
+    n=$("$O" show oqvian-cyber-control-full-unlocked-v1.1 --template 2>/dev/null | grep -c '\.Tools' || true)
     printf '  oqvian tool template: %s refs %s\n' "$n" \
       "$([ "${n:-0}" -ge 1 ] && echo '(ok)' || echo '(MISSING — run models/build-models.sh)')"
   fi
@@ -163,9 +163,9 @@ fi
 
 # --------------------------------------------------------------------------- #
 if [ "$DO_MODEL" -eq 1 ]; then
-  step "4/8  models (base 4.7 GB + 4 role models, shared layers)"
+  step "4/8  model (abliterated security base, 4.7 GB)"
   if [ -n "$OLLAMA_BIN" ]; then
-    OLLAMA_BIN="$OLLAMA_BIN" bash models/build-models.sh && okmsg "5 models built with tool template" || failmsg "model build"
+    OLLAMA_BIN="$OLLAMA_BIN" bash models/build-models.sh && okmsg "single OQVIAN model built with tool template" || failmsg "model build"
   else
     failmsg "model build (no ollama binary)"
   fi
@@ -242,7 +242,7 @@ if [ "$fail" -eq 0 ]; then
 
     oqvian                   # web UI
     oqvian-cli "question"    # one-shot
-    ollama run oqvian-ciso   # direct role model
+    ollama run oqvian-cyber-control-full-unlocked-v1.1   # the model, directly
 
   Scope (edit before any engagement):  ~/.config/oqvian/scope.json
   Audit trail:                         ~/.local/share/oqvian/audit.jsonl

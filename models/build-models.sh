@@ -1,53 +1,41 @@
 #!/usr/bin/env bash
-# Rebuild OQVIAN models with Qwen2.5 tool-calling support.
+# Build the single OQVIAN model: OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1.
+#
+# One model. An abliterated (refusal-reflex removed) security base with a unified
+# operator/CISO persona and the Qwen2.5 tool template, so the operator's CISO can
+# drive the Kali tool surface with it.
+#
+# Base choice: Qwen2.5-7B-Instruct-abliterated, NOT Qwen2.5-Coder-...-abliterated.
+# The abliterated *Coder* base cannot emit the <tool_call> wrapper (it fences the
+# JSON in ```json, so Ollama parses zero tool calls). The abliterated *Instruct*
+# base keeps the native Qwen tool-calling reflex. Verified 2026-11-06.
 #
 # The GGUF's bundled template has no `.Tools` block, so Ollama never renders
-# tool schemas into the prompt and the model can never emit a tool call.
-# This installs the official Qwen2.5 tool template on the base model and
-# rebuilds the role models on top of it.
+# tool schemas into the prompt and the model can never emit a tool call. This
+# appends the official Qwen2.5 tool template from models/qwen-tools.template.
 #
-# Fresh machine: pulls hf.co/bartowski/WhiteRabbitNeo-2.5-... Q4_K_M (4.7 GB)
-# Existing machine: reuses the local `oqvian` model, only the template changes.
+# Fresh machine: pulls the abliterated GGUF (~4.7 GB).
+# Existing machine: rebuilds the manifest, persona and template only.
+#
+# Offline: set ABLITERATED_FROM=/path/to/model.gguf
 set -euo pipefail
 cd "$(dirname "$0")"
 export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 OLLAMA="${OLLAMA_BIN:-$HOME/ollama}"
 command -v "$OLLAMA" >/dev/null 2>&1 || OLLAMA="$(command -v ollama)"
 
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+MODEL="oqvian-cyber-control-full-unlocked-v1.1"
+PERSONA="Modelfile.unlocked"
+FROM_REF="${ABLITERATED_FROM:-hf.co/mradermacher/Qwen2.5-7B-Instruct-abliterated-GGUF:Q4_K_M}"
 
-if "$OLLAMA" show oqvian >/dev/null 2>&1; then
-  echo "== base exists, preserving its system prompt =="
-  "$OLLAMA" show oqvian --modelfile > "$TMP/base.raw"
-else
-  echo "== base missing, starting from models/Modelfile.base =="
-  cp Modelfile.base "$TMP/base.raw"
-fi
-
-# Already-built models come from the release with the template and the current
-# system prompt. Rebuilding them would need the GGUF reference to resolve, which
-# fails on an offline machine — so detect and stop instead.
-if [ -f "$TMP/base.raw" ]; then
-  tools=$(grep -c '\.Tools' "$TMP/base.raw" 2>/dev/null || true)
-  stale=$(grep -c 'rag_search\|run_tool\|atomic_lookup' "$TMP/base.raw" 2>/dev/null || true)
-  have_all=1
-  for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
-    "$OLLAMA" show "$m" >/dev/null 2>&1 || have_all=0
-  done
-  if [ "${tools:-0}" -ge 1 ] && [ "${stale:-0}" -eq 0 ] && [ "$have_all" -eq 1 ]; then
-    echo "== models already built with the tool template — nothing to do =="
-    for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
-      n=$("$OLLAMA" show "$m" --template 2>/dev/null | grep -c '\.Tools' || true)
-      printf '   %-22s .Tools refs: %s\n' "$m" "$n"
-    done
-    exit 0
-  fi
-fi
-
-python3 - "$TMP/base.raw" "$TMP/base.mf" <<'PY'
+# Compose the final Modelfile: persona from the persona file (FROM swapped to the
+# chosen weights) + the tool template appended.
+python3 - "$PERSONA" "$FROM_REF" "$MODEL.mf" <<'PY'
 import sys
 from pathlib import Path
-src = Path(sys.argv[1]).read_text().splitlines()
+
+src_path, from_ref, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+src = Path(src_path).read_text().splitlines()
 out, skip = [], False
 for line in src:
     if line.startswith("TEMPLATE "):
@@ -57,24 +45,49 @@ for line in src:
         if line.strip() == '"' or line.rstrip().endswith('"""'):
             skip = False
         continue
+    if line.startswith("FROM "):
+        out.append(f"FROM {from_ref}")
+        continue
     out.append(line)
+
 tpl = Path("qwen-tools.template").read_text().rstrip()
-Path(sys.argv[2]).write_text("\n".join(out).rstrip() + f'\n\nTEMPLATE """\n{tpl}\n"""\n')
-print("prepared base modelfile")
+
+# --- hardening: fail loudly instead of building a silently-wrong model ------
+assert not any(l.strip() == '"""' for l in tpl.splitlines()), \
+    'qwen-tools.template has a bare """ line (would close the TEMPLATE block early)'
+assert any(l.startswith('FROM ') for l in out), 'persona has no FROM line'
+final = "\n".join(out).rstrip() + f'\n\nTEMPLATE """\n{tpl}\n"""\n'
+froms = [l for l in final.splitlines() if l.startswith('FROM ')]
+assert len(froms) == 1, f'expected exactly one FROM line, found {len(froms)}: {froms}'
+assert final.count('\nTEMPLATE """') == 1, 'expected exactly one TEMPLATE block'
+Path(out_path).write_text(final)
+print(f"prepared {out_path} (FROM {from_ref})")
 PY
 
-echo "== rebuilding base (pulls the GGUF on a fresh machine) =="
-"$OLLAMA" create oqvian -f "$TMP/base.mf" | tail -1
-"$OLLAMA" cp oqvian oqvian:defensive-offensive | tail -1
-
-echo "== rebuilding role models =="
-for r in ciso offensive defensive ir; do
-  "$OLLAMA" create "oqvian-$r" -f "Modelfile.$r" | tail -1
-done
+echo "== creating $MODEL =="
+"$OLLAMA" create "$MODEL" -f "$MODEL.mf" | tail -1
+rm -f "$MODEL.mf"
 
 echo "== verify =="
-for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
-  n=$("$OLLAMA" show "$m" --template 2>/dev/null | grep -c '\.Tools' || true)
-  printf '%-22s .Tools refs: %s\n' "$m" "$n"
+"$OLLAMA" show "$MODEL" --template 2>/dev/null | grep -c '\.Tools' \
+  | awk -v m="$MODEL" '{ printf "%-34s .Tools refs: %s\n", m, $1; if ($1 < 1) exit 1 }'
+"$OLLAMA" show "$MODEL" 2>/dev/null | sed -n '1,12p'
+
+# Prune every retired name (pre-rename base, multi-persona roles, pre-abliteration
+# and abliterated family tags) so exactly one OQVIAN model remains.
+STALE="oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir
+oqvian-abliterated oqvian-abliterated-ciso oqvian-abliterated-offensive
+oqvian-abliterated-defensive oqvian-abliterated-ir"
+for m in $STALE; do
+  if "$OLLAMA" show "$m" >/dev/null 2>&1; then
+    "$OLLAMA" rm "$m" >/dev/null 2>&1 && echo "pruned $m" || echo "could not prune $m"
+  fi
 done
-"$OLLAMA" list | head -8
+for tag in oqvian:defensive-offensive oqvian-abliterated:defensive-offensive; do
+  if "$OLLAMA" show "$tag" >/dev/null 2>&1; then
+    "$OLLAMA" rm "$tag" >/dev/null 2>&1 && echo "pruned $tag" || true
+  fi
+done
+
+echo "== final model list =="
+"$OLLAMA" list | grep -E '^(NAME|oqvian)' || true
