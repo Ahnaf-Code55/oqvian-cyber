@@ -193,14 +193,27 @@ Get-Content "$Rel\oqvian-models-2026.11.05.sha256" | ForEach-Object {
 }
 Write-Host "checksums match"
 
-cmd /c copy /b "$Rel\oqvian-models-2026.11.05.tar.part-00+$Rel\oqvian-models-2026.11.05.tar.part-01+$Rel\oqvian-models-2026.11.05.tar.part-02" "$Rel\models.tar"
-
+# Stream the parts straight into tar, so the disk must hold the 4.7 GB of parts
+# plus the 4.7 GB of extracted blobs — not a third 4.7 GB copy of the archive.
 New-Item -ItemType Directory -Force -Path "$HOME\.ollama" | Out-Null
-tar -xf "$Rel\models.tar" -C "$HOME\.ollama"
+cmd /c "type ""$Rel\oqvian-models-2026.11.05.tar.part-00"" ""$Rel\oqvian-models-2026.11.05.tar.part-01"" ""$Rel\oqvian-models-2026.11.05.tar.part-02""" |
+    tar -xf - -C "$HOME\.ollama"
 ollama list
 ```
 
 **Expect:** the five `oqvian*` entries and `nomic-embed-text`.
+
+Needs ~10 GB free on `C:` while this runs (4.7 GB of parts, 4.7 GB of blobs).
+Delete `$Rel\*.part-*` afterwards to reclaim half of it.
+
+If `type | tar` errors on this machine, fall back to reassembling first — that
+needs ~15 GB free:
+
+```powershell
+cmd /c copy /b "$Rel\oqvian-models-2026.11.05.tar.part-00+$Rel\oqvian-models-2026.11.05.tar.part-01+$Rel\oqvian-models-2026.11.05.tar.part-02" "$Rel\models.tar"
+tar -xf "$Rel\models.tar" -C "$HOME\.ollama"
+Remove-Item "$Rel\models.tar"
+```
 
 Then install the harness from the shipped cache, offline:
 
