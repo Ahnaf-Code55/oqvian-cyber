@@ -44,6 +44,11 @@ third party.
 └─────────────────┘
         │
 ┌───────▼──────────────────────────────────────────────────────────┐
+│  tool-call bridge  127.0.0.1:11435                               │
+│  retries Ollama's intermittent empty turns; normalises text calls │
+└───────┬──────────────────────────────────────────────────────────┘
+        │
+┌───────▼──────────────────────────────────────────────────────────┐
 │  Ollama (GPU offload where available)                            │
 │  OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1 — one abliterated model   │
 └──────────────────────────────────────────────────────────────────┘

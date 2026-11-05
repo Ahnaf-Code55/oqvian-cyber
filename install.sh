@@ -161,6 +161,33 @@ if [ -f hardware.env ]; then
   fi
 fi
 
+# Tool-call bridge: the harness speaks OpenAI to 127.0.0.1:11435; the bridge
+# re-issues Ollama's intermittent empty turns and normalises any base that
+# emits a tool call as text. Without it a blank turn reaches the agent as
+# "the model did nothing".
+PROXY_UNIT="$HOME/.config/systemd/user/oqvian-proxy.service"
+PY_BIN="$ROOT/.venv/bin/python"; [ -x "$PY_BIN" ] || PY_BIN="$(command -v python3 || echo python3)"
+if [ -f "$ROOT/deploy/oqvian-proxy.service" ]; then
+  mkdir -p "$(dirname "$PROXY_UNIT")"
+  sed -e "s|@ROOT@|$ROOT|g" -e "s|@PY@|$PY_BIN|g" \
+    "$ROOT/deploy/oqvian-proxy.service" > "$PROXY_UNIT"
+fi
+if systemctl --user daemon-reload 2>/dev/null \
+   && systemctl --user enable --now oqvian-proxy.service 2>/dev/null; then
+  okmsg "oqvian-proxy.service (user) on 127.0.0.1:11435"
+else
+  pgrep -f 'toolcall_proxy' >/dev/null \
+    || (setsid "$PY_BIN" "$ROOT/mcp/toolcall_proxy.py" >/tmp/opencode/oqvian-proxy.log 2>&1 < /dev/null &)
+  okmsg "tool-call bridge (nohup) on 127.0.0.1:11435"
+fi
+for _ in $(seq 1 20); do
+  curl -sf -m 1 http://127.0.0.1:11435/ >/dev/null && break
+  sleep 0.3
+done
+curl -sf -m 3 http://127.0.0.1:11435/ >/dev/null \
+  && okmsg "bridge answers on 127.0.0.1:11435" \
+  || failmsg "bridge not answering on 127.0.0.1:11435"
+
 # --------------------------------------------------------------------------- #
 if [ "$DO_MODEL" -eq 1 ]; then
   step "4/8  model (abliterated security base, 4.7 GB)"

@@ -1,0 +1,18 @@
+[Unit]
+Description=OQVIAN tool-call bridge (OpenAI chat API <-> Ollama)
+Documentation=file:@ROOT@/docs/MODEL.md
+After=ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+# Stdlib-only; any python3 works, but prefer the repo venv when present.
+ExecStart=@PY@ @ROOT@/mcp/toolcall_proxy.py
+Environment=OQVIAN_PROXY_UPSTREAM=http://127.0.0.1:11434
+Environment=OQVIAN_PROXY_HOST=127.0.0.1
+Environment=OQVIAN_PROXY_PORT=11435
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

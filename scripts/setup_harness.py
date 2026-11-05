@@ -118,7 +118,11 @@ def write_settings() -> None:
         "    ollama-local:\n"
         "      displayName: OQVIAN (local)\n"
         "      api: openai-completions\n"
-        "      baseURL: http://127.0.0.1:11434/v1\n"
+        # Point at the OQVIAN tool-call bridge, not Ollama directly. The bridge
+        # forwards to Ollama and shields the agent from its intermittent empty
+        # turns (retry) and any text-form tool call. Ollama itself stays on
+        # 127.0.0.1:11434. Started by install.sh / the `oqvian` launcher.
+        "      baseURL: http://127.0.0.1:11435/v1\n"
         # pi-ai refuses a provider that presents no credential at all.
         # Ollama ignores auth, so a static bearer token satisfies the client
         # without requiring an API-key env var on the CISO's machine.

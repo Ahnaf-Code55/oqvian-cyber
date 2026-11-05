@@ -3,25 +3,34 @@
 
 Sits between an OpenAI-compatible client (the operator's harness) and Ollama.
 
-Ollama only recognises a tool call when the model emits it inside
-``<tool_call>...</tool_call>`` tags. Some abliterated bases instead emit the
-same payload as a markdown-fenced JSON object::
+It does two jobs, and is otherwise transparent:
 
-    ```json
-    {"name": "kb", "arguments": {"action": "cve", "query": "CVE-2021-44228"}}
-    ```
+1. **Retry the empty turn.** Ollama intermittently ends a turn with
+   ``finish_reason: stop`` and an empty assistant message -- a few tokens were
+   generated, then dropped by its tool parser -- instead of the tool call the
+   model actually emitted. A blank turn reaches the agent as "the model did
+   nothing". The bridge re-issues the request up to ``OQVIAN_PROXY_RETRIES``
+   times (default 3), nudging sampling each time, before giving up.
 
-Ollama then hands that back as ordinary assistant *text*, so the harness never
-runs a tool. This bridge is transparent for all normal traffic and, only when a
-request carries ``tools``, converts that fenced JSON back into a real OpenAI
-``tool_calls`` array -- streaming and non-streaming alike. If the model already
-emits native tool calls (e.g. an Instruct base), the response is passed through
-untouched, so the bridge is safe under any base.
+2. **Normalise text-form tool calls.** Some abliterated bases emit a tool call
+   as a markdown-fenced JSON object rather than a native call::
 
-Stdlib only. Configuration (env):
-    OQVIAN_PROXY_UPSTREAM   default http://127.0.0.1:11434   (Ollama)
-    OQVIAN_PROXY_HOST       default 127.0.0.1
-    OQVIAN_PROXY_PORT       default 11435
+       ```json
+       {"name": "kb", "arguments": {"action": "cve", "query": "CVE-2021-44228"}}
+       ```
+
+   Ollama hands that back as ordinary assistant *text*, so the harness never
+   runs a tool. The bridge converts fenced/bare/keyed JSON back into a real
+   OpenAI ``tool_calls`` array. Native calls pass through untouched.
+
+Requests that carry ``tools`` are buffered, re-issued and (if needed) rewritten,
+for streaming and non-streaming alike; everything else is a byte-for-byte
+passthrough. Stdlib only. Configuration (env):
+    OQVIAN_PROXY_UPSTREAM      default http://127.0.0.1:11434   (Ollama)
+    OQVIAN_PROXY_UPSTREAM_API  chat (default, native /api/chat) | v1 (OpenAI shim)
+    OQVIAN_PROXY_HOST          default 127.0.0.1
+    OQVIAN_PROXY_PORT          default 11435
+    OQVIAN_PROXY_RETRIES       default 3
 
 Run:  python3 mcp/toolcall_proxy.py
 """
@@ -31,6 +40,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error as urlerr
@@ -39,9 +49,25 @@ from urllib import request as urlreq
 UPSTREAM = os.environ.get("OQVIAN_PROXY_UPSTREAM", "http://127.0.0.1:11434").rstrip("/")
 HOST = os.environ.get("OQVIAN_PROXY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OQVIAN_PROXY_PORT", "11435"))
+# Upstream dialect for tool-bearing requests:
+#   "chat" (default) -> native /api/chat, translated to OpenAI shape. Reliable:
+#                       Ollama returns tool calls here even when its OpenAI shim
+#                       drops them.
+#   "v1"             -> Ollama's /v1/chat/completions shim, passed through.
+UPSTREAM_API = os.environ.get("OQVIAN_PROXY_UPSTREAM_API", "chat").lower()
+# How tool calls are handled for /api/chat:
+#   "render" (default) -> fold the tool schemas into the system message, let the
+#                         model emit <tool_call> text, and parse it here. This
+#                         bypasses Ollama's tool parser, which intermittently
+#                         drops a valid call and returns an empty turn.
+#   "ollama"           -> pass `tools` to Ollama and rely on its parser.
+TOOL_MODE = os.environ.get("OQVIAN_PROXY_TOOL_MODE", "render").lower()
 
 _FENCE = re.compile(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", re.DOTALL)
+# Qwen's tool template wraps each call in <tool_call>...</tool_call>.
+_TOOLCALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TIMEOUT = 1800  # CPU-only generation can be slow
+_RETRIES = int(os.environ.get("OQVIAN_PROXY_RETRIES", "3"))  # empty-completion retries
 
 
 # --------------------------------------------------------------------------- #
@@ -113,7 +139,8 @@ def _extract(content, names):
     """Return ``(pairs, leftover_text)``; leftover is '' when calls were found."""
     if not content or not names:
         return [], content
-    texts = [m.group(1) for m in _FENCE.finditer(content)]
+    texts = [m.group(1) for m in _TOOLCALL.finditer(content)]
+    texts += [m.group(1) for m in _FENCE.finditer(content)]
     if "{" in content:
         bal = _balanced_json(content)
         if bal:
@@ -149,6 +176,176 @@ def _tool_calls(pairs):
         }
         for i, (n, a) in enumerate(pairs)
     ]
+
+
+def _parse(resp, names):
+    """Return ``(calls, leftover)`` from an OpenAI-shaped upstream response.
+
+    Prefers a native ``tool_calls`` array; falls back to extracting a
+    fenced/bare JSON call from the text. ``calls`` is None when neither is
+    present, and ``leftover`` may still be '' — which is how an *empty*
+    completion shows up.
+    """
+    try:
+        msg = resp["choices"][0].get("message", {})
+    except Exception:
+        return None, ""
+    native = msg.get("tool_calls")
+    if native:
+        return native, (msg.get("content") or "")
+    pairs, _rest = _extract(msg.get("content") or "", names)
+    if pairs:
+        return _tool_calls(pairs), ""
+    return None, (msg.get("content") or "")
+
+
+def _tools_block(tools):
+    """Reproduce the Qwen template's ``# Tools`` section verbatim.
+
+    Byte-identical to what Ollama emits when it renders ``tools`` itself, so the
+    model sees exactly the same prompt -- we just parse the reply ourselves
+    instead of relying on Ollama's (intermittently failing) tool parser.
+    """
+    lines = []
+    for t in tools or []:
+        fn = (t or {}).get("function")
+        if isinstance(fn, dict):
+            lines.append(
+                '{"type": "function", "function": %s}'
+                % json.dumps(fn, separators=(",", ":"))
+            )
+    if not lines:
+        return ""
+    return (
+        "\n\n# Tools\n\n"
+        "You may call one or more functions to assist with the user query.\n\n"
+        "You are provided with function signatures within <tools></tools> XML tags:\n"
+        "<tools>\n" + "\n".join(lines) + "\n</tools>\n\n"
+        "For each function call, return a json object with function name and "
+        "arguments within <tool_call></tool_call> XML tags:\n"
+        '<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n'
+        "</tool_call>"
+    )
+
+
+def _inject_tools(messages, tools):
+    """Append the tools block to the system turn (creating one if absent)."""
+    block = _tools_block(tools)
+    if not block:
+        return list(messages or [])
+    out = []
+    injected = False
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        if not injected and m.get("role") == "system":
+            nm = dict(m)
+            nm["content"] = (m.get("content") or "") + block
+            out.append(nm)
+            injected = True
+        else:
+            out.append(m)
+    if not injected:
+        out.insert(0, {"role": "system", "content": block.lstrip("\n")})
+    return out
+
+
+def _ollama_request(req, mode="ollama"):
+    """OpenAI chat request -> native Ollama ``/api/chat`` body.
+
+    ``mode='render'`` folds the tool schemas into the system message and drops
+    the ``tools`` field, so Ollama does no tool parsing -- the caller parses the
+    ``<tool_call>`` text itself. ``mode='ollama'`` passes ``tools`` through.
+    """
+    msgs = list(req.get("messages") or [])
+    render = mode == "render" and req.get("tools")
+    if render:
+        msgs = _inject_tools(msgs, req.get("tools"))
+
+    body = {"model": req.get("model"), "messages": [], "stream": False}
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        nm = {"role": m.get("role") or "user", "content": m.get("content") or ""}
+        tcs = []
+        for t in m.get("tool_calls") or []:
+            fn = (t or {}).get("function", {}) or {}
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            tcs.append({"function": {"name": fn.get("name", ""), "arguments": args}})
+        if tcs:
+            nm["tool_calls"] = tcs
+        body["messages"].append(nm)
+
+    if req.get("tools") and not render:
+        body["tools"] = req["tools"]
+
+    opts = {}
+    for src, dst in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("max_tokens", "num_predict"),
+        ("seed", "seed"),
+        ("stop", "stop"),
+    ):
+        if req.get(src) is not None:
+            opts[dst] = req[src]
+    if isinstance(req.get("options"), dict):
+        opts.update(req["options"])
+    if opts:
+        body["options"] = opts
+    return body
+
+
+def _ollama_response(resp, model):
+    """Native Ollama ``/api/chat`` reply -> OpenAI chat-completion shape."""
+    if isinstance(resp, dict) and resp.get("error"):
+        return {"error": {"message": str(resp["error"])}}
+    msg = (resp or {}).get("message", {}) or {}
+    content = msg.get("content") or ""
+    calls = []
+    for tc in msg.get("tool_calls") or []:
+        fn = (tc or {}).get("function", {}) or {}
+        calls.append(
+            {
+                "id": "call_" + uuid.uuid4().hex[:8],
+                "index": len(calls),
+                "type": "function",
+                "function": {
+                    "name": fn.get("name", ""),
+                    "arguments": _args_str(fn.get("arguments", {})),
+                },
+            }
+        )
+    out_msg = {"role": "assistant", "content": content}
+    if calls:
+        out_msg["tool_calls"] = calls
+    if calls:
+        finish = "tool_calls"
+    elif (resp or {}).get("done_reason") == "length":
+        finish = "length"
+    else:
+        finish = "stop"
+    p = (resp or {}).get("prompt_eval_count") or 0
+    c = (resp or {}).get("eval_count") or 0
+    return {
+        "id": "chatcmpl-" + uuid.uuid4().hex[:12],
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": (resp or {}).get("model") or model or "",
+        "choices": [
+            {"index": 0, "message": out_msg, "finish_reason": finish}
+        ],
+        "usage": {
+            "prompt_tokens": p,
+            "completion_tokens": c,
+            "total_tokens": p + c,
+        },
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -228,47 +425,95 @@ class Handler(BaseHTTPRequestHandler):
         up_req["stream"] = False
         h = dict(hdrs)
         h["Content-Type"] = "application/json"
-        r = urlreq.Request(
-            UPSTREAM + "/v1/chat/completions",
-            data=json.dumps(up_req).encode(),
-            headers=h,
-            method="POST",
-        )
-        try:
-            up = urlreq.urlopen(r, timeout=_TIMEOUT)
-            resp = json.loads(up.read())
-        except urlerr.HTTPError as e:
-            body = e.read().decode(errors="replace")
-            self._send_json(raw_body=body.encode(), status=e.code)
-            return
-        except Exception as e:  # upstream unreachable
-            self._send_json(
-                raw_body=json.dumps({"error": {"message": str(e)}}).encode(), status=502
-            )
-            return
 
+        if UPSTREAM_API == "v1":
+            url = UPSTREAM + "/v1/chat/completions"
+        else:
+            url = UPSTREAM + "/api/chat"
+
+        # Both Ollama endpoints intermittently return an *empty* assistant turn
+        # (no tool_call, no text, ``done_reason: stop``) -- a sampling artefact,
+        # not a refusal. Re-issue the same request a few times rather than
+        # handing the agent a blank turn; each retry nudges sampling so it does
+        # not replay the same degenerate path.
+        resp = None
         calls = None
         leftover = ""
-        try:
-            choice = resp["choices"][0]
-            msg = choice.get("message", {})
-            native = msg.get("tool_calls")
-            if native:  # base already calls tools -> pass through unchanged
-                calls = native
-                leftover = msg.get("content") or ""
+        attempts = max(1, _RETRIES)
+        for attempt in range(attempts):
+            if UPSTREAM_API == "v1":
+                body = dict(up_req)
+                if attempt:
+                    base = float(body.get("temperature", 0.2) or 0.2)
+                    body["temperature"] = min(base + 0.25 * attempt, 1.0)
+                    opts = dict(body.get("options") or {})
+                    opts["temperature"] = body["temperature"]
+                    body["options"] = opts
             else:
-                pairs, rest = _extract(msg.get("content") or "", names)
-                if pairs:
-                    calls = _tool_calls(pairs)
-                else:
-                    leftover = msg.get("content") or ""
-        except Exception:
-            calls = None
+                body = _ollama_request(req, TOOL_MODE)
+                if attempt:
+                    opts = dict(body.get("options") or {})
+                    base = float(opts.get("temperature", 0.2) or 0.2)
+                    opts["temperature"] = min(base + 0.25 * attempt, 1.0)
+                    body["options"] = opts
+
+            r = urlreq.Request(
+                url,
+                data=json.dumps(body).encode(),
+                headers=h,
+                method="POST",
+            )
+            try:
+                up = urlreq.urlopen(r, timeout=_TIMEOUT)
+                raw_resp = json.loads(up.read())
+            except urlerr.HTTPError as e:
+                payload = e.read().decode(errors="replace")
+                self._send_json(raw_body=payload.encode(), status=e.code)
+                return
+            except Exception as e:  # upstream unreachable
+                self._send_json(
+                    raw_body=json.dumps({"error": {"message": str(e)}}).encode(),
+                    status=502,
+                )
+                return
+
+            resp = (
+                raw_resp
+                if UPSTREAM_API == "v1"
+                else _ollama_response(raw_resp, req.get("model"))
+            )
+            if resp.get("error"):  # upstream refused the request outright
+                self._send_json(json.dumps(resp).encode(), status=502)
+                return
+
+            calls, leftover = _parse(resp, names)
+            if calls or (leftover or "").strip():
+                break  # got a usable turn (tool call or real text)
+            try:
+                _m = (raw_resp.get("message") or {}) if isinstance(raw_resp, dict) else {}
+                _dbg = {
+                    "done_reason": raw_resp.get("done_reason") if isinstance(raw_resp, dict) else None,
+                    "eval_count": raw_resp.get("eval_count") if isinstance(raw_resp, dict) else None,
+                    "content": (_m.get("content") or "")[:120],
+                    "has_tool_calls": bool(_m.get("tool_calls")),
+                    "raw": (json.dumps(raw_resp)[:200] if isinstance(raw_resp, dict) else str(raw_resp)[:200]),
+                }
+            except Exception:
+                _dbg = {}
+            sys.stderr.write(
+                f"[toolcall-proxy] empty completion, retry "
+                f"{attempt + 1}/{attempts}  {_dbg}\n"
+            )
 
         if calls:
             sys.stderr.write(
                 f"[toolcall-proxy] rewrote {len(calls)} tool call(s): "
                 f"{[c['function']['name'] for c in calls]}\n"
+            )
+        elif not (leftover or "").strip():
+            sys.stderr.write(
+                "[toolcall-proxy] WARNING: upstream returned empty after "
+                f"{attempts} attempt(s)\n"
             )
         if want_stream:
             self._emit_stream(resp, calls, leftover)
@@ -335,7 +580,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     sys.stderr.write(
-        f"[toolcall-proxy] listening on http://{HOST}:{PORT}  ->  {UPSTREAM}\n"
+        f"[toolcall-proxy] listening on http://{HOST}:{PORT}  ->  {UPSTREAM} "
+        f"(upstream: {UPSTREAM_API}, tool-mode: {TOOL_MODE}, retries: {_RETRIES})\n"
     )
     try:
         srv.serve_forever()

@@ -87,11 +87,45 @@ tool_calls  [{ "function": { "name": "execute",
                "arguments": "{\"tool\":\"nmap\",\"args\":\"-sT -O 127.0.0.1\"}" } }]
 ```
 
-`mcp/toolcall_proxy.py` remains as a **base-agnostic safety net**: it rewrites
-tool-call JSON that a weaker base might emit as fenced/bare/keyed text
-(```` ```json ```` blocks, `{toolname: {...}}`, or a bare object) into real
-`tool_calls`, and passes native calls through untouched. It is optional on this
-base; keep it if you ever swap the weights.
+`mcp/toolcall_proxy.py` is the **harness's front door**. It listens on
+`127.0.0.1:11435` and the harness provider points at it; it forwards to Ollama on
+`127.0.0.1:11434`. It does two jobs:
+
+1. **Own the tool protocol (render mode, default).** Ollama's tool parser
+   intermittently accepts a valid tool call, discards it, and returns an empty
+   assistant turn (`done_reason: stop`, no `tool_calls`). This is reproducible:
+   with one tool schema set the same prompt failed 5 of 6 times, always after 28
+   generated tokens, while the model's *actual* output was a well-formed call.
+   In render mode the bridge folds the tool schemas into the system message
+   itself (byte-identical to the template's own `# Tools` block), lets the model
+   emit `<tool_call>{"name": ...}</tool_call>` as text, and parses that into a
+   real OpenAI `tool_calls` array. Ollama's parser is then out of the loop. Both
+   streaming and non-streaming are handled.
+2. **Retry a genuinely empty turn.** If the model itself produces nothing, the
+   bridge re-issues the request up to `OQVIAN_PROXY_RETRIES` (default 3) times,
+   nudging sampling each time, so a blank turn does not reach the agent.
+
+It also normalises a base that emits the call as fenced or bare JSON
+(```` ```json ```` blocks, `{toolname: {...}}`, or a bare object) rather than in
+`<tool_call>` tags, so it is safe under a swapped model.
+
+Configuration: it talks to Ollama's native `/api/chat` and translates the reply
+to the OpenAI shape (`OQVIAN_PROXY_UPSTREAM_API=v1` routes through Ollama's
+OpenAI shim instead); `OQVIAN_PROXY_TOOL_MODE=ollama` hands tool parsing back to
+Ollama. Started by `install.sh` (user unit `oqvian-proxy.service`, see `deploy/`)
+and by the `oqvian` launcher.
+
+Verified 2026-11-06 through the bridge in render mode, non-streaming and
+streaming, with **no retries needed**:
+
+```
+finish_reason: tool_calls
+tool_calls: [{"function": {"name": "execute",
+              "arguments": "{\"tool\": \"nmap\", \"args\": \"-sT 127.0.0.1\"}"}}]
+```
+
+and multi-turn (assistant `tool_calls` + `role: tool` result) returns a normal
+text answer rather than repeating the call.
 
 ## Measuring refusal behaviour
 

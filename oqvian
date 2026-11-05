@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# OQVIAN HARNESS — starts the local model service, then the browser UI.
+# OQVIAN HARNESS — starts the local model service and the tool-call bridge,
+# then the browser UI.
 set -u
 systemctl --user start ollama.service 2>/dev/null || true
 for i in $(seq 1 20); do
@@ -8,8 +9,30 @@ for i in $(seq 1 20); do
 done
 export PATH="$HOME/.local/bin:$PATH"
 
+# Tool-call bridge on 127.0.0.1:11435 (the harness provider points here). It
+# re-issues Ollama's intermittent empty turns and normalises text-form tool
+# calls, so a blank turn never reaches the agent.
+ROOT="${OQVIAN_ROOT:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)}"
+PY_BIN="$ROOT/.venv/bin/python"; [ -x "$PY_BIN" ] || PY_BIN="$(command -v python3 || echo python3)"
+if ! curl -sf -m 1 http://127.0.0.1:11435/ >/dev/null 2>&1; then
+  if systemctl --user start oqvian-proxy.service 2>/dev/null; then
+    :
+  else
+    setsid "$PY_BIN" "$ROOT/mcp/toolcall_proxy.py" >/tmp/opencode/oqvian-proxy.log 2>&1 < /dev/null &
+  fi
+  for i in $(seq 1 20); do
+    curl -sf -m 1 http://127.0.0.1:11435/ >/dev/null && break
+    sleep 0.3
+  done
+fi
+
 printf '\n\033[1m  OQVIAN HARNESS\033[0m\n'
 printf '  model   '; "$(command -v ollama || echo "$HOME/ollama")" ps 2>/dev/null | awk 'NR==2{printf "%s  (%s)\n", $1, $4} END{if(NR<2) print "idle"}'
+if curl -sf -m 1 http://127.0.0.1:11435/ >/dev/null 2>&1; then
+  printf '  bridge  up on 127.0.0.1:11435\n'
+else
+  printf '  bridge  \033[31mDOWN\033[0m (tool calls will not be retried)\n'
+fi
 printf '  scope   %s\n\n' "${HOME}/.config/oqvian/scope.json"
 
 exec dsh web "$@"
