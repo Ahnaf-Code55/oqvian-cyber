@@ -104,7 +104,7 @@ ollama show oqvian --template | grep -c '.Tools'     # must be >= 1
 **Linux** (target: the CISO laptop, or any x86_64 box with 16 GB RAM):
 
 ```bash
-git clone https://github.com/Ahnaf-Code55/oqvian-cyber.git ~/oqvian-cyber
+git clone https://github.com/TRahman2414/oqvian-cyber.git ~/oqvian-cyber
 cd ~/oqvian-cyber
 bash scripts/install-release-assets.sh   # ~4.9 GB: the built models + harness, from Releases
 bash install.sh                  # everything else: deps, corpus, index, tools, wiring
@@ -122,7 +122,7 @@ gives you a model that cannot call tools — see [`AI-HANDOFF.md`](AI-HANDOFF.md
 The repository is private; ask for access and clone with a token or `gh`:
 
 ```bash
-gh auth login && gh repo clone Ahnaf-Code55/oqvian-cyber ~/oqvian-cyber
+gh auth login && gh repo clone TRahman2414/oqvian-cyber ~/oqvian-cyber
 ```
 
 `install.sh` runs the eight stages below and prints a summary; re-run it after
@@ -152,12 +152,14 @@ dsh --profile web --dump-config | grep -A5 oqvian-mcp
 ollama show oqvian --template | grep -c '.Tools'
 ```
 
-### Handing it to someone else
+### Ownership
 
-**Over GitHub** (private repo, recipients need an invite):
+The repository is owned by the CISO (`TRahman2414/oqvian-cyber`), so the
+release history, stars and permissions belong to the team that will run it. To
+bring in another collaborator:
 
 ```bash
-gh api -X PUT repos/Ahnaf-Code55/oqvian-cyber/collaborators/<their-username> \
+gh api -X PUT repos/TRahman2414/oqvian-cyber/collaborators/<their-username> \
   -f permission=push
 ```
 
@@ -165,7 +167,7 @@ The clone carries source only — no index, no corpus, no scope file. The **weig
 and the harness ship as release assets**, so the recipient runs:
 
 ```bash
-gh repo clone Ahnaf-Code55/oqvian-cyber && cd oqvian-cyber
+gh repo clone TRahman2414/oqvian-cyber && cd oqvian-cyber
 bash scripts/install-release-assets.sh
 bash install.sh
 ```
@@ -182,7 +184,7 @@ bash install.sh
 over, then point the installer at the directory:
 
 ```bash
-gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel   # connected box
+gh release download v1.0.0 --repo TRahman2414/oqvian-cyber -D ./oq-rel   # connected box
 bash scripts/install-release-assets.sh --from-dir ./oq-rel                  # target box
 ```
 
