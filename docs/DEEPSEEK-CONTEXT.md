@@ -186,8 +186,10 @@ Two non-obvious facts:
 
 - `oqvian-cli` runs the **headless** profile with
   `DSH_PERMISSION_MODE=danger-full-access` (headless cannot answer prompts) —
-  the web UI keeps `ask`. Scope + audit are enforced **server-side** in
-  `mcp/server.py`, so this is not a safety gap.
+  the web UI keeps `ask`. `oqvian-repl` interactively boots the DSH web host on a
+  loopback-only random port and also forces `danger-full-access`; use it for
+  server/headless machines that want an ongoing chat. Scope + audit are enforced
+  **server-side** in `mcp/server.py`, so this is not a safety gap.
 - `oauth` route in the dump config is the Anthropic ChatGPT OAuth card. Not
   relevant to OQVIAN.
 

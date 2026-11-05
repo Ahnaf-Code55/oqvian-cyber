@@ -196,10 +196,27 @@ human should read [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ## Daily use
 
+For a server without a browser, use the terminal client:
+
+```bash
+oqvian-repl --cwd /home/ifat/oqvian-cyber
+# stdin commands: /help /models /status /reset /cancel /quit
+```
+
+It starts the DSH web host on a loopback-only random port, creates a persistent
+session for that workspace, and streams assistant text plus tool events into the
+terminal. It sets `DSH_PERMISSION_MODE=danger-full-access`, so tools execute
+without approval prompts.
+
+For the graphical UI:
+
 ```bash
 # web UI
 oqvian                       # starts ollama, then dsh web
 dsh web                      # if ollama is already running
+
+# interactive terminal REPL (recommended for server/headless machines)
+oqvian-repl                  # multi-turn chat, /help, /models, /status, /reset, /cancel, /quit
 
 # one-shot CLI
 oqvian-cli "Map T1059.001 to Sigma rules we can deploy"
@@ -217,9 +234,11 @@ require your approval, and every MCP tool call shows up as a prompt. Keep it tha
 way outside disposable VMs.
 
 `oqvian-cli` cannot prompt, so it sets `DSH_PERMISSION_MODE=danger-full-access`
-(no approval gate) and prints a warning. On that path the controls that remain
-are the scope allowlist and the audit log — both enforced inside the tool server,
-not by the model.
+(no approval gate) and prints a warning. `oqvian-repl` runs the same DSH agent
+interactively but explicitly uses `DSH_PERMISSION_MODE=danger-full-access`; its
+tool calls and edits happen without approval. On those paths the controls that
+remain are the scope allowlist and the audit log — both enforced inside the tool
+server, not by the model.
 
 **Start here for real work:** [`docs/CISO-PLAYBOOK.md`](docs/CISO-PLAYBOOK.md) —
 twelve ready prompts (exposure check, board one-pager, compliance mapping, CVE
@@ -326,7 +345,7 @@ callable — it reports installed vs missing rather than guessing.
 |---|---|
 | Authorisation boundary | `~/.config/oqvian/scope.json`, enforced server-side |
 | Per-action approval | web UI: dsh preset `ask` — every tool call prompts |
-| One-shot CLI | `oqvian-cli` runs auto-approve (nothing can answer a prompt headless); scope + audit still apply |
+| One-shot CLI / terminal REPL | `oqvian-cli` auto-approves (nothing can answer a prompt headless); `oqvian-repl` uses danger bypass for interactive sessions; scope + audit still apply |
 | Immutable activity log | `~/.local/share/oqvian/audit.jsonl` |
 | Data stays on device | Ollama on 127.0.0.1, no cloud route |
 | Model cannot escalate | tools run as your user; root tools need your sudo |
@@ -352,7 +371,8 @@ For engagements, keep a copy of the scope file and the audit log with the report
 ├── AI-HANDOFF.md              install instructions written for an AI assistant
 ├── docs/CISO-PLAYBOOK.md      twelve CISO workflows, ready to paste
 ├── docs/HANDOFF.md            one-page install guide for a human
-├── oqvian / oqvian-cli        launchers (symlinked into ~/.local/bin)
+├── oqvian / oqvian-cli / oqvian-repl   launchers (symlinked into ~/.local/bin)
+├── scripts/oqvian-repl.py       interactive terminal client (spawns `dsh web`, streams events)
 ├── scripts/
 │   ├── preflight.sh           hardware probe → hardware.env
 │   ├── setup_harness.py       dsh profiles + settings + scope (cross-platform)

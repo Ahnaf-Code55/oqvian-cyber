@@ -134,7 +134,9 @@ model cannot talk its way past it. Keep `"mode": "restricted"` for real work;
 ## 6. Two things to know before you point it at production
 
 **Approval.** The web UI (`oqvian`) prompts for every tool call. The one-shot CLI
-(`oqvian-cli`) cannot prompt, so it auto-approves and prints a warning. Use the
+(`oqvian-cli`) cannot prompt, so it auto-approves and prints a warning. For an
+interactive server/headless session, use `oqvian-repl` instead; it starts DSH locally
+(loopback only) and runs tools in danger-bypass mode. Use the
 web UI when the target matters.
 
 **The audit log.** Every call appends a line to
