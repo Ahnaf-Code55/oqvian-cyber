@@ -21,7 +21,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-REPO="Ahnaf-Code55/oqvian-cyber"
+REPO="${OQVIAN_REPO:-}"
+if [ -z "$REPO" ]; then
+  # Derive owner/name from the clone, so the script keeps working after the
+  # repository moves (personal account -> org) without being edited.
+  url=$(git remote get-url origin 2>/dev/null || true)
+  REPO=$(printf '%s' "$url" \
+    | sed -E 's#^(git@[^:]+:|https?://[^/]+/|ssh://git@[^/]+/)##; s#\.git$##')
+fi
+# Fallback for a download-only copy with no .git directory.
+case "$REPO" in
+  */*) : ;;
+  *)   REPO="Ahnaf-Code55/oqvian-cyber" ;;
+esac
 TAG="v1.0.0"
 DO_MODELS=1
 DO_HARNESS=1
