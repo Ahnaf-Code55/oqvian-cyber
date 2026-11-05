@@ -386,8 +386,10 @@ For engagements, keep a copy of the scope file and the audit log with the report
 │   ├── brand_harness.py       rename the harness to OQVIAN HARNESS
 │   └── setup-harness.sh       thin bash wrapper
 ├── deploy/windows/            install.ps1 + CISO laptop guide (Iris Xe MAX)
+├── deploy/oqvian-proxy.service  systemd user unit for the tool-call bridge
 ├── models/                    Modelfile.*, qwen-tools.template, build-models.sh
 ├── mcp/server.py              MCP tool server (5 public tools)
+├── mcp/toolcall_proxy.py      tool-call bridge, 127.0.0.1:11435 (render mode)
 ├── mcp/smoke_test.py          19 offline checks
 ├── index/                     docs.jsonl + fts.db + meta.json
 └── corpus/raw/                ATT&CK, CWE, KEV, Sigma, atomics, WSTG, …

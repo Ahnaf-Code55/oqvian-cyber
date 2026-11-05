@@ -29,15 +29,25 @@ the machine.
    the Ollama profile carries a static `Authorization: Bearer ollama` header —
    Ollama ignores it, the client stops complaining, and no API-key env var has to
    exist on the CISO's machine.
+7. **A dropped tool call cannot silently degrade the agent.** Ollama's tool parser
+   intermittently accepts a valid call and returns an empty turn; the tool-call
+   bridge (`mcp/toolcall_proxy.py`, `oqvian-proxy.service`) owns the protocol —
+   it renders the schemas, parses the model's `<tool_call>` itself, and retries a
+   genuinely empty turn. The harness provider points at the bridge, not Ollama
+   directly.
 
 ## Verifying a new deployment
 
 ```bash
+bash install.sh --status                      # ten components, every one "yes"
 .venv/bin/python mcp/smoke_test.py            # 19 checks, no LLM, ~10 s
 dsh --profile web --dump-config | grep -c oqvian-mcp
 ollama show oqvian --template | grep -c '.Tools'
 ollama ps                                     # after one prompt: GPU vs CPU split
 ```
+
+The `--status` line includes `bridge`, which confirms the tool-call bridge is
+answering on `127.0.0.1:11435` before you ever send a prompt.
 
 Then the end-to-end test that proves the whole chain — harness → MCP → model →
 tool → knowledge base:
