@@ -17,7 +17,10 @@ Three things that must all be present, because each one silently ruins the
 stack if missing:
 
 1. **The model** — WhiteRabbitNeo 2.5 (a Qwen2.5-Coder-7B fine-tune), renamed
-   OQVIAN, served by Ollama on `127.0.0.1:11434`.
+   OQVIAN, served by Ollama on `127.0.0.1:11434`. It is **our build**, not the
+   upstream download: the tool-calling template and the five role system prompts
+   are baked in. §2.3 fetches it from this repository's release. Read §12.1
+   before considering any other source.
 2. **The harness** — `@deepseek-ai/dsh` at exactly `0.1.1-rc.2`, which gives the
    model a browser UI and a tool loop.
 3. **The tool server** — `mcp/server.py`, which exposes 5 tools the model calls
@@ -72,14 +75,33 @@ cd ~/oqvian-cyber
 **Expect:** 28 files, no `index/`, no `corpus/`, no `.venv/`. That is correct —
 they are generated, not shipped.
 
-### 2.3 Install
+### 2.3 Get the built models and harness
+
+**Do this before `install.sh`.** It downloads ~4.9 GB of release assets: the five
+already-built models, plus a primed npm cache for the harness. No HuggingFace and
+no npm registry are involved.
+
+```bash
+bash scripts/install-release-assets.sh
+```
+
+**Expect:** three parts downloaded, `checksums match`, then an `ollama list`
+showing `oqvian:latest`, `oqvian:defensive-offensive`, `oqvian-ciso`,
+`oqvian-offensive`, `oqvian-defensive`, `oqvian-ir` and `nomic-embed-text`, then
+`dsh 0.1.1-rc.2`.
+
+Takes 5–20 minutes depending on bandwidth. If it stops with
+`install gh, or export GH_TOKEN`, re-export the token from §2.2 and re-run.
+
+### 2.4 Install the rest
 
 ```bash
 bash install.sh
 ```
 
-This runs eight stages and takes 20–40 minutes. It is idempotent: if it fails,
-re-run it and it resumes.
+This runs eight stages and takes 20–40 minutes — but the two slow ones are now
+already satisfied, so expect closer to 10. It is idempotent: if it fails, re-run
+it and it resumes.
 
 **Expect** near the end:
 
@@ -90,14 +112,10 @@ re-run it and it resumes.
 
 and a final line reporting `install.sh --status` with nine components.
 
-If `install.sh` reports `harness (install dsh, then re-run this script)`:
+If `install.sh` still reports `harness (install dsh, then re-run this script)`,
+§2.3 did not complete — fix that rather than installing from npm.
 
-```bash
-npm i -g @deepseek-ai/dsh@0.1.1-rc.2
-bash install.sh
-```
-
-### 2.4 Continue to §4
+### 2.5 Continue to §4
 
 ---
 
@@ -132,15 +150,71 @@ git clone "https://$env:GH_TOKEN@github.com/Ahnaf-Code55/oqvian-cyber.git" "$HOM
 cd "$HOME\oqvian-cyber"
 ```
 
-### 3.3 Install
+### 3.3 Get the built models and harness
+
+**Do this before `install.ps1`.** Downloads ~4.9 GB: the five already-built models
+and a primed npm cache. No HuggingFace, no npm registry.
+
+```powershell
+$Rel = "$HOME\oq-rel"
+New-Item -ItemType Directory -Force -Path $Rel | Out-Null
+gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber --dir $Rel --clobber
+```
+
+If `gh` is not installed, use `git`'s credential and the API instead:
+
+```powershell
+$h = @{ Authorization = "Bearer $env:GH_TOKEN" }
+Invoke-RestMethod "https://api.github.com/repos/Ahnaf-Code55/oqvian-cyber/releases/tags/v1.0.0" -Headers $h |
+  Select-Object -ExpandProperty assets |
+  ForEach-Object {
+    Invoke-WebRequest $_.url -Headers ($h + @{ Accept = "application/octet-stream" }) -OutFile "$Rel\$($_.name)"
+  }
+```
+
+**Expect:** `oqvian-harness-0.1.1-rc.2-npm-cache.tar`, three `oqvian-models-*.tar.part-*`,
+and `oqvian-models-2026.11.05.sha256`.
+
+Verify, reassemble, and extract:
+
+```powershell
+Get-Content "$Rel\oqvian-models-2026.11.05.sha256" | ForEach-Object {
+    $want, $file = $_ -split '\s+', 2
+    $got = (Get-FileHash "$Rel\$($file.Trim())" -Algorithm SHA256).Hash.ToLower()
+    if ($got -ne $want.ToLower()) { throw "checksum mismatch: $file" }
+}
+Write-Host "checksums match"
+
+cmd /c copy /b "$Rel\oqvian-models-2026.11.05.tar.part-00+$Rel\oqvian-models-2026.11.05.tar.part-01+$Rel\oqvian-models-2026.11.05.tar.part-02" "$Rel\models.tar"
+
+New-Item -ItemType Directory -Force -Path "$HOME\.ollama" | Out-Null
+tar -xf "$Rel\models.tar" -C "$HOME\.ollama"
+ollama list
+```
+
+**Expect:** the five `oqvian*` entries and `nomic-embed-text`.
+
+Then install the harness from the shipped cache, offline:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:TEMP\oqcache" | Out-Null
+tar -xf "$Rel\oqvian-harness-0.1.1-rc.2-npm-cache.tar" -C "$env:TEMP\oqcache"
+npm install -g "@deepseek-ai/dsh@0.1.1-rc.2" --cache "$env:TEMP\oqcache\dshcache" --offline --no-audit --no-fund
+dsh --version
+```
+
+**Expect:** `0.1.1-rc.2`.
+
+### 3.4 Install the rest
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
 ```
 
-**Expect:** eight stages, ending with a summary of `ok`/`skip`/`FAIL` counts.
+**Expect:** eight stages, ending with a summary of `ok`/`skip`/`FAIL` counts. It
+will skip the model pull and the harness install, because §3.3 satisfied them.
 
-### 3.4 Intel GPU note
+### 3.5 Intel GPU note
 
 The target laptop has an **Intel Iris Xe MAX (4 GB)**. Ollama reaches it through
 **Vulkan**, not CUDA:
@@ -156,26 +230,24 @@ installer's path is the supported one.
 
 ---
 
-## 4. The step everyone skips — verify tool calling
+## 4. Confirm the tool template survived
 
-A GGUF carries no `.Tools` block in its chat template, so Ollama never renders
-the tool schemas and **the model can never call a tool**. It answers like a
-chatbot and looks fine. `models/build-models.sh` fixes this by installing the
-Qwen2.5 template; `install.sh` runs it at stage 4.
+A GGUF carries no `.Tools` block in its chat template, so Ollama would never
+render the tool schemas and **the model could never call a tool**. It would
+answer like a chatbot and look fine.
 
-Confirm it took effect:
+The release models in §2.3/§3.3 already have the Qwen2.5 template baked in — that
+is the entire reason we ship a 4.7 GB artefact instead of pointing at a download.
+Verify it is intact:
 
 ```bash
 ollama show oqvian --template | grep -c '.Tools'
 ```
 
-**Expect: `3`.** If `0`, run:
+**Expect: `3`.** If you see `0`, something overwrote `oqvian` with the upstream
+model. Do not proceed — re-extract the release models and re-check.
 
-```bash
-bash models/build-models.sh
-```
-
-Check all five role models at once:
+Check all five at once:
 
 ```bash
 for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
@@ -183,7 +255,11 @@ for m in oqvian oqvian-ciso oqvian-offensive oqvian-defensive oqvian-ir; do
 done
 ```
 
-**Expect** `3` on every line.
+**Expect** `3` on every line. Only if a line shows `0`, rebuild it locally:
+
+```bash
+bash models/build-models.sh
+```
 
 ---
 
@@ -312,7 +388,7 @@ cosmetics around that.
 |---|---|---|
 | `PI_AI_ERROR: No API key for provider: ollama-local` | pi-ai refuses a credential-less provider | The `ollama-local` block needs `headers: {Authorization: Bearer ollama}`. Re-run `python scripts/setup_harness.py` |
 | `MISSING_CREDENTIAL` | same, other variant — someone added `apiKeyEnv` | Delete the `apiKeyEnv:` line under `ollama-local` |
-| Model answers, never calls a tool | `.Tools` template missing | `bash models/build-models.sh`, then check §4 |
+| Model answers, never calls a tool | `.Tools` template missing — usually an upstream pull overwrote the release model | Re-extract the release models (§2.3/§3.3), then re-check §4 |
 | Tool call is denied / cancelled instantly | approval preset `ask` in a non-interactive run | Use `oqvian-cli` (sets auto-approve) or the web UI (prompts) |
 | `stream idle timeout after 300000ms` | CPU generation is slower than the harness idle timeout | Add `streamIdleTimeoutMs: 900000` under `ollama-local` in `~/.dsh/settings.yaml` |
 | Every network tool says `BLOCKED` | target not in scope file | Add it to `scope.json` — do not switch mode to `open` |
@@ -324,9 +400,9 @@ cosmetics around that.
 
 ## 12. Do not do these
 
-1. **Do not skip `models/build-models.sh`.** Without it the stack is a chatbot
-   with a security system prompt. It will still answer questions and look
-   healthy, which is why this is the most common failure.
+1. **Do not skip §2.3 / §3.3.** The built models are the deliverable. A model
+   pulled from upstream cannot call tools, and it will still answer questions,
+   which is why this is the most common failure.
 2. **Do not make the repository public.** It is private by intent.
 3. **Do not add safety disclaimers to the model's system prompt.** The scope
    file is the control; the model is authorised for in-scope work only.
@@ -338,23 +414,23 @@ cosmetics around that.
 7. **Do not run the flag `--with-root`** unless the user has explicitly agreed
    to a root toolchain install.
 
-### 12.1 If HuggingFace is unreachable
-
-The weights may be attached to a GitHub Release on this repository:
+### 12.1 Never `ollama pull` the upstream model
 
 ```bash
-gh release download --repo Ahnaf-Code55/oqvian-cyber --pattern 'oqvian-models*'
+ollama pull hf.co/bartowski/WhiteRabbitNeo-2.5-Qwen-2.5-Coder-7B-GGUF:Q4_K_M   # NO
 ```
 
-If no release asset exists, the model must be fetched from:
+That fetches the **unmodified** fine-tune. It has no `.Tools` block, no OQVIAN
+system prompt, and none of the five role models. It answers questions and looks
+healthy while being unable to call a single tool — the failure this stack exists
+to avoid. Everything we changed lives in the Ollama model manifests and the chat
+template, and those are only in the release assets.
 
-```
-hf.co/bartowski/WhiteRabbitNeo-2.5-Qwen-2.5-Coder-7B-GGUF:Q4_K_M
-```
+Same reason for the harness: `@deepseek-ai/dsh` must stay at `0.1.1-rc.2`. The
+release cache is built for exactly that version.
 
-with `ollama pull`, which needs a route to `huggingface.co`. If neither is
-possible, this machine cannot be provisioned — report that rather than
-substituting a different model.
+If the release assets are unreachable, stop and report it. Do not substitute a
+different model, a different quantisation, or a newer harness.
 
 ---
 

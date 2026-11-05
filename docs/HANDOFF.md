@@ -37,38 +37,48 @@ installer sets automatically. Details: `deploy/windows/README.md`.
 
 ## 3. Install
 
-### Windows
+Both platforms start the same way: clone, then pull the built models and harness
+from this repository's release. That download is ~4.9 GB and replaces both the
+HuggingFace pull and the npm install.
 
-Unzip anywhere, then in PowerShell at the folder root:
+```bash
+gh auth login
+gh repo clone Ahnaf-Code55/oqvian-cyber ~/oqvian-cyber
+cd ~/oqvian-cyber
+bash scripts/install-release-assets.sh     # models + harness, no network beyond GitHub
+```
+
+### Windows
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
 ```
 
-Takes 30–60 minutes, mostly downloading the model. Re-run it any time; it is
-idempotent and skips what is already done.
+Takes 10–30 minutes once the assets are in place. Re-run it any time; it is
+idempotent and skips what is already done. If `gh` is unavailable, the
+PowerShell equivalent of the download step is written out in
+[`../AI-HANDOFF.md`](../AI-HANDOFF.md) §3.3.
 
 ### Linux / macOS
 
 ```bash
-tar xzf oqvian-cyber-*.tar.gz
-cd oqvian-cyber-*
 bash install.sh
 ```
 
 Add `--with-root` if you have sudo and want the full root toolset
 (BlackArch group mapping on Arch, apt packages elsewhere).
 
-### Air-gapped machine
+### No internet at all
 
-If the bundle was built with `--with-model`, it contains an `ollama-models/`
-directory. Copy its contents to:
+The release assets are also how you provision a machine with no route out:
 
-- Windows: `%USERPROFILE%\.ollama\models\`
-- Linux/macOS: `~/.ollama/models/`
+```bash
+gh release download v1.0.0 --repo Ahnaf-Code55/oqvian-cyber -D ./oq-rel
+```
 
-before running the installer. It will then find the weights already present and
-skip the download.
+Copy `oq-rel/` to the target on a USB stick, then follow
+[`../AI-HANDOFF.md`](../AI-HANDOFF.md) §3.3 from the "verify, reassemble, and
+extract" line onwards. Everything after that point is offline.
 
 ---
 

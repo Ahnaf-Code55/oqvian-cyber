@@ -106,11 +106,18 @@ ollama show oqvian --template | grep -c '.Tools'     # must be >= 1
 ```bash
 git clone https://github.com/Ahnaf-Code55/oqvian-cyber.git ~/oqvian-cyber
 cd ~/oqvian-cyber
-bash install.sh                  # full: deps, ollama, models, corpus, index, tools, harness
+bash scripts/install-release-assets.sh   # ~4.9 GB: the built models + harness, from Releases
+bash install.sh                  # everything else: deps, corpus, index, tools, wiring
 bash install.sh --status         # report only
-bash install.sh --no-tools       # models + index + harness
+bash install.sh --no-tools       # skip the Kali-class toolchain
 bash install.sh --with-root      # also install the BlackArch root toolset (sudo)
 ```
+
+`install-release-assets.sh` is not optional in practice. It fetches the Ollama
+store this repository publishes, which already carries the Qwen2.5 tool-calling
+template and the five role system prompts. Pulling the upstream GGUF instead
+gives you a model that cannot call tools — see [`AI-HANDOFF.md`](AI-HANDOFF.md)
+§12.1.
 
 The repository is private; ask for access and clone with a token or `gh`:
 
@@ -154,17 +161,30 @@ gh api -X PUT repos/Ahnaf-Code55/oqvian-cyber/collaborators/<their-username> \
   -f permission=push
 ```
 
-They then `gh repo clone Ahnaf-Code55/oqvian-cyber` and run `install.sh`. Only
-source ships — no index, no corpus, no weights, no scope file.
-
-**Offline or air-gapped**, build a bundle instead:
+The clone carries source only — no index, no corpus, no scope file. The **weights
+and the harness ship as release assets**, so the recipient runs:
 
 ```bash
-./package.sh --all        # code + index + corpus + the 4.7 GB Ollama store
+gh repo clone Ahnaf-Code55/oqvian-cyber && cd oqvian-cyber
+bash scripts/install-release-assets.sh
+bash install.sh
 ```
 
-The recipient copies `ollama-models/` into `~/.ollama/models/` before
-installing. `docs/HANDOFF.md` in the bundle is the one-page guide.
+**Release assets** (`v1.0.0`):
+
+| Asset | Size | Contents |
+|---|---|---|
+| `oqvian-models-*.tar.part-00…02` | 4.7 GB | Ollama store: 5 OQVIAN models + nomic-embed-text, tool template baked in |
+| `oqvian-models-*.sha256` | 300 B | per-part checksums |
+| `oqvian-harness-*-npm-cache.tar` | 195 MB | primed npm cache for `@deepseek-ai/dsh@0.1.1-rc.2`, linux-x64 **and** win32-x64 |
+
+**Fully offline**, download the assets on a connected machine and carry them
+over; `install-release-assets.sh` reads a local directory just as happily as the
+API. `package.sh --all` still exists for a single-file bundle.
+
+**Installing with an AI assistant?** Give it [`AI-HANDOFF.md`](AI-HANDOFF.md) —
+it is written as executable steps with expected output and a failure table. A
+human should read [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ---
 
