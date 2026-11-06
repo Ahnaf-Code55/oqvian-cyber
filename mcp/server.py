@@ -3216,6 +3216,477 @@ def aggregate(action: str = "report", target: str = "",
     return f"unknown action '{action}' — use report, summary, export, or compare"
 
 
+# --------------------------------------------------------------------------- #
+# Phase 4: Autonomy Engine - Attack Planner
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def plan_attack(target: str = "", discovered: str = "", goal: str = "shell",
+                max_steps: int = 10) -> str:
+    """Generate an attack plan based on discovered information.
+    
+    Args:
+      target: target host
+      discovered: JSON string of discovered info (services, versions, etc.)
+      goal: shell | root | data | domain_admin
+      max_steps: maximum steps in plan
+    
+    Returns ordered attack plan with techniques, tools, and fallbacks.
+    """
+    t0 = time.time()
+    
+    if not target:
+        return "target required"
+    
+    # Parse discovered info
+    if discovered:
+        try:
+            discovered_data = json.loads(discovered)
+        except json.JSONDecodeError:
+            discovered_data = {}
+    else:
+        # Get from state
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        if state_file.exists():
+            try:
+                discovered_data = json.loads(state_file.read_text()).get("discovered", {})
+            except Exception:
+                discovered_data = {}
+        else:
+            discovered_data = {}
+    
+    # Generate attack plan
+    plan = []
+    
+    # Query intuition for each discovered service
+    services = discovered_data.get("services", {})
+    vulns = discovered_data.get("vulns", [])
+    
+    # Check for known vulnerabilities first
+    for vuln in vulns[:5]:
+        plan.append({
+            "step": len(plan) + 1,
+            "technique": vuln,
+            "priority": "high",
+            "tool": "searchsploit",
+            "args": f"searchsploit {vuln}",
+            "fallback": [
+                {"tool": "kb", "args": f"action=cve query={vuln}"},
+                {"tool": "execute", "args": f"tool=nuclei args='-u {target} -id {vuln}'"}
+            ]
+        })
+    
+    # Query intuition for services
+    for service_info in list(services.items())[:5]:
+        port, service = service_info
+        service_name = service.split()[0] if service else ""
+        version = " ".join(service.split()[1:]) if len(service.split()) > 1 else ""
+        
+        # Query intuition
+        intuition_result = intuition(action="query", service=service_name, 
+                                     version=version, confidence=0.6)
+        
+        # Parse intuition results and add to plan
+        if "Found" in intuition_result and "likely" in intuition_result:
+            # Extract techniques from intuition output
+            lines = intuition_result.split("\n")
+            for line in lines:
+                if any(cve in line for cve in ["CVE-", "MS", "CVE"]):
+                    technique = line.strip().split()[0] if line.strip() else ""
+                    if technique:
+                        plan.append({
+                            "step": len(plan) + 1,
+                            "technique": technique,
+                            "priority": "medium",
+                            "service": service_name,
+                            "tool": "execute",
+                            "args": f"tool=nuclei args='-u {target} -severity critical,high'",
+                            "fallback": []
+                        })
+                        break
+    
+    # Add generic attack steps if plan is short
+    if len(plan) < 3:
+        # Web app attacks
+        if any(str(p) in str(services) for p in [80, 443, 8080, 8443]):
+            plan.append({
+                "step": len(plan) + 1,
+                "technique": "web-enumeration",
+                "priority": "medium",
+                "tool": "chain",
+                "args": "name='web-app' target='{target}'",
+                "fallback": []
+            })
+        
+        # SSH brute force
+        if 22 in services or "ssh" in str(services).lower():
+            plan.append({
+                "step": len(plan) + 1,
+                "technique": "ssh-brute",
+                "priority": "low",
+                "tool": "creds",
+                "args": "action='brute' target='{target}' service='ssh'",
+                "fallback": []
+            })
+        
+        # SMB attacks
+        if 445 in services or "smb" in str(services).lower():
+            plan.append({
+                "step": len(plan) + 1,
+                "technique": "smb-attack",
+                "priority": "medium",
+                "tool": "chain",
+                "args": "name='ad-attack' target='{target}'",
+                "fallback": []
+            })
+    
+    # Limit to max_steps
+    plan = plan[:max_steps]
+    
+    # Format output
+    lines = [f"🎯 Attack Plan for: {target}"]
+    lines.append(f"   Goal: {goal}")
+    lines.append(f"   Steps: {len(plan)}")
+    lines.append("")
+    
+    if plan:
+        lines.append("   Step | Priority | Technique | Tool")
+        lines.append("   " + "-" * 60)
+        for step in plan:
+            lines.append(
+                f"   {step.get('step', ''):4} | {step.get('priority', ''):8} | "
+                f"{step.get('technique', '')[:20]:20} | {step.get('tool', '')}"
+            )
+        
+        lines.append("")
+        lines.append("   💡 Plan generated using intuition database and discovered services")
+        lines.append(f"   ⏱️  Generated in {time.time() - t0:.2f}s")
+    else:
+        lines.append("   No attack plan generated (insufficient discovery data)")
+        lines.append("   Run recon/scan first to discover services and vulnerabilities")
+    
+    _audit("plan_attack", "generated", target, f"steps={len(plan)}")
+    
+    # Save plan
+    plan_file = STATE_DIR / f"plans_{target.replace('/', '_').replace(':', '_')}.json"
+    plan_file.write_text(json.dumps(plan, indent=2))
+    
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: Autonomy Engine - Autonomous Attack
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def autonomous_hack(target: str = "", scope: str = "web",
+                    aggressiveness: int = 5, timeout: int = 3600,
+                    verbose: bool = True) -> str:
+    """Run fully autonomous attack against target.
+    
+    Args:
+      target: target host/URL
+      scope: web | network | ad | full
+      aggressiveness: 1-10 (higher = more aggressive, faster, more retries)
+      timeout: max seconds to run
+      verbose: print progress
+    
+    Returns attack results and loot.
+    """
+    t0 = time.time()
+    start_time = t0
+    
+    if not target:
+        return "target required"
+    
+    lines = [f"🤖 Starting Autonomous Attack"]
+    lines.append(f"   Target: {target}")
+    lines.append(f"   Scope: {scope}")
+    lines.append(f"   Aggressiveness: {aggressiveness}/10")
+    lines.append(f"   Timeout: {timeout}s")
+    lines.append("")
+    
+    # Initialize state
+    state_data = {
+        "target": target,
+        "phase": "recon",
+        "started": datetime.utcnow().isoformat() + "Z",
+        "discovered": {},
+        "attempted": [],
+        "loot": []
+    }
+    
+    def log(msg):
+        nonlocal lines
+        lines.append(msg)
+        if verbose:
+            print(msg)  # Real-time output
+    
+    def check_timeout():
+        return time.time() - start_time >= timeout
+    
+    # Phase 1: Recon
+    log("📡 Phase 1: Reconnaissance")
+    
+    # Add protocol if missing
+    target_with_protocol = target
+    if scope in ["web", "full"] and not target.startswith(("http://", "https://")):
+        target_with_protocol = f"http://{target}"
+    
+    if scope in ["web", "full"]:
+        # HTTP probe
+        http_result = http_probe(target_with_protocol)
+        state_data["discovered"]["http"] = http_result[:500] if http_result else ""
+        log(f"   ✅ HTTP probe complete")
+        
+        if check_timeout():
+            log("⏱️  Timeout reached")
+            return "\n".join(lines)
+        
+        # Tech detection
+        tech_result = run_tool("httpx", f"-u {target} -tech-detect", target, "tech_detect", 60)
+        state_data["discovered"]["tech"] = tech_result[:500] if tech_result else ""
+        log(f"   ✅ Tech detection complete")
+    
+    if scope in ["network", "full"]:
+        # Port scan
+        ports_result = port_scan(target, "1-1024" if aggressiveness < 7 else "1-65535")
+        state_data["discovered"]["ports"] = ports_result[:500] if ports_result else ""
+        log(f"   ✅ Port scan complete")
+        
+        if check_timeout():
+            log("⏱️  Timeout reached")
+            return "\n".join(lines)
+    
+    if check_timeout():
+        log("⏱️  Timeout reached")
+    
+    # Phase 2: Enumerate
+    log("")
+    log("🔍 Phase 2: Enumeration")
+    
+    # Vulnerability scan
+    vuln_result = run_tool("nuclei", f"-u {target} -severity critical,high -silent", 
+                          target, "vuln_scan", 180)
+    state_data["discovered"]["vulns"] = vuln_result[:1000] if vuln_result else ""
+    log(f"   ✅ Vulnerability scan complete")
+    
+    if check_timeout():
+        log("⏱️  Timeout reached")
+    
+    # Phase 3: Attack
+    log("")
+    log("⚔️  Phase 3: Attack")
+    
+    # Generate and execute attack plan
+    plan_result = plan_attack(target=json.dumps(state_data["discovered"]), 
+                             goal="shell", max_steps=aggressiveness)
+    log(f"   {plan_result[:200]}...")
+    
+    # Execute top attacks from plan
+    attacks_tried = 0
+    max_attacks = aggressiveness  # More aggressive = more attacks
+    
+    # Try nuclei exploits first
+    nuclei_result = run_tool("nuclei", f"-u {target} -severity critical,high,medium -json-export nuclei_results.json",
+                            target, "exploit", 300)
+    attacks_tried += 1
+    
+    if "found" in nuclei_result.lower() or "critical" in nuclei_result.lower():
+        log(f"   ✅ Nuclei found vulnerabilities!")
+        loot(action="add", target=target, loot_type="vuln", 
+             name="nuclei_results", content=nuclei_result[:2000])
+    
+    if check_timeout():
+        log("⏱️  Timeout reached")
+    
+    # Try directory brute force for web
+    if scope in ["web", "full"]:
+        dir_result = run_tool("ffuf", f"-u {target}/FUZZ -w /usr/share/wordlists/dirb/common.txt -mc 200,301,302,403 -silent",
+                             target, "dir_brute", 300)
+        attacks_tried += 1
+        
+        if "found" in dir_result.lower() or len(dir_result) > 100:
+            log(f"   ✅ Directory brute force found endpoints!")
+            loot(action="add", target=target, loot_type="endpoint",
+                 name="ffuf_results", content=dir_result[:2000])
+    
+    if check_timeout():
+        log("⏱️  Timeout reached")
+    
+    # Phase 4: Report
+    log("")
+    log("📊 Phase 4: Report")
+    
+    state_data["completed"] = datetime.utcnow().isoformat() + "Z"
+    state_data["duration"] = time.time() - t0
+    state_data["attacks_tried"] = attacks_tried
+    
+    # Save state
+    state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+    state_file.write_text(json.dumps(state_data, indent=2))
+    
+    # Summary
+    lines.append("")
+    lines.append(f"   ✅ Autonomous attack complete")
+    lines.append(f"   Duration: {time.time() - t0:.1f}s")
+    lines.append(f"   Attacks tried: {attacks_tried}")
+    lines.append(f"   State saved: {state_file}")
+    
+    # Check loot
+    loot_dir = LOOT / target.replace('/', '_').replace(':', '_')
+    if loot_dir.exists():
+        loot_files = list(loot_dir.rglob("*"))
+        if loot_files:
+            lines.append(f"   Loot collected: {len(loot_files)} items")
+    
+    _audit("autonomous_hack", "completed", target, 
+           f"duration={time.time() - t0:.1f} attacks={attacks_tried}")
+    
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: Autonomy Engine - Continuous Loop
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def autonomous_loop(target: str = "", goal: str = "root",
+                    strategies: str = "", timeout: int = 7200,
+                    verbose: bool = True) -> str:
+    """Run continuous autonomous attack loop until goal achieved.
+    
+    Args:
+      target: target host
+      goal: user | root | domain_admin | data
+      strategies: comma-separated (web,ssh,smb,ad,etc.)
+      timeout: max seconds
+      verbose: print progress
+    
+    Loop: assess → plan → execute → learn → repeat
+    """
+    t0 = time.time()
+    start_time = t0
+    
+    if not target:
+        return "target required"
+    
+    # Parse strategies
+    strategies_list = [s.strip() for s in strategies.split(",")] if strategies else ["web", "ssh", "smb"]
+    
+    lines = [f"🔄 Starting Autonomous Loop"]
+    lines.append(f"   Target: {target}")
+    lines.append(f"   Goal: {goal}")
+    lines.append(f"   Strategies: {', '.join(strategies_list)}")
+    lines.append(f"   Timeout: {timeout}s")
+    lines.append("")
+    
+    iteration = 0
+    goal_achieved = False
+    
+    def log(msg):
+        nonlocal lines
+        lines.append(msg)
+        if verbose:
+            print(msg)
+    
+    def check_timeout():
+        return time.time() - start_time >= timeout
+    
+    def goal_reached(current_state):
+        if goal == "user" and current_state.get("access", "") == "user":
+            return True
+        if goal == "root" and current_state.get("access", "") == "root":
+            return True
+        if goal == "domain_admin" and "domain_admin" in current_state.get("access", ""):
+            return True
+        return False
+    
+    # Main loop
+    while not check_timeout() and not goal_achieved:
+        iteration += 1
+        log(f"\\n🔄 Iteration {iteration}")
+        
+        # Assess current state
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        if state_file.exists():
+            try:
+                current_state = json.loads(state_file.read_text())
+            except Exception:
+                current_state = {}
+        else:
+            current_state = {"discovered": {}, "attempted": []}
+        
+        # Check if goal reached
+        if goal_reached(current_state):
+            goal_achieved = True
+            log(f"   ✅ GOAL ACHIEVED: {goal}")
+            break
+        
+        # Plan next attack
+        log("   📋 Planning next attack...")
+        plan_result = plan_attack(
+            target=target,
+            discovered=json.dumps(current_state.get("discovered", {})),
+            goal=goal,
+            max_steps=3
+        )
+        log(f"   {plan_result[:150]}...")
+        
+        # Execute based on strategy
+        for strategy in strategies_list:
+            if check_timeout():
+                log("   ⏱️  Timeout reached")
+                break
+            
+            log(f"   ⚔️  Strategy: {strategy}")
+            
+            if strategy == "web":
+                result = autonomous_hack(target=target, scope="web", 
+                                       aggressiveness=5, timeout=600, verbose=verbose)
+            elif strategy == "ssh":
+                result = creds(action="brute", target=target, service="ssh",
+                             wordlist="/usr/share/wordlists/rockyou.txt")
+            elif strategy == "smb":
+                result = run_tool("netexec", f"smb {target} -u admin -p password", 
+                                target, "smb_test", 120)
+            elif strategy == "ad":
+                result = chain(name="ad-attack", target=target, verbose=verbose)
+            else:
+                result = f"Unknown strategy: {strategy}"
+            
+            log(f"   {result[:200]}...")
+            
+            # Learn from result
+            if "success" in result.lower() or "found" in result.lower():
+                learn(action="record", technique=f"{strategy}-attack", 
+                     result="success", target=target)
+            else:
+                learn(action="record", technique=f"{strategy}-attack",
+                     result="failed", target=target)
+            
+            # Update state
+            current_state["attempted"].append({
+                "strategy": strategy,
+                "result": "success" if "success" in result.lower() else "failed",
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            })
+            
+            state_file.write_text(json.dumps(current_state, indent=2))
+        
+        # Small delay between iterations
+        time.sleep(1)
+    
+    # Final report
+    log("")
+    log("📊 Loop Complete")
+    log(f"   Iterations: {iteration}")
+    log(f"   Duration: {time.time() - t0:.1f}s")
+    log(f"   Goal achieved: {'Yes' if goal_achieved else 'No (timeout)'}")
+    
+    _audit("autonomous_loop", "completed", target, 
+           f"iterations={iteration} goal_achieved={goal_achieved}")
+    
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     _audit("server", "start", detail=str(INDEX))
     mcp.run()
