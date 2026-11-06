@@ -2561,6 +2561,661 @@ def backtrack(target: str = "", technique: str = "", reason: str = "",
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# Phase 3: Learning System - Success Rate Tracking
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def learn(action: str = "record", technique: str = "", result: str = "success",
+          target: str = "", service: str = "", version: str = "",
+          reason: str = "", payload: str = "", time_taken: float = 0.0) -> str:
+    """Record attack results for cross-session learning.
+    
+    Actions:
+      record    record a technique result
+      stats     get success rates for techniques
+      similar   find similar targets and what worked
+      forget    remove a learning entry
+    
+    Args:
+      action: record | stats | similar | forget
+      technique: technique/exploit name (CVE, tool, method)
+      result: success | failed | partial
+      target: target host
+      service: service name (Apache, SSH, WordPress, etc.)
+      version: service version
+      reason: why it succeeded/failed
+      payload: payload that worked (optional)
+      time_taken: seconds to complete
+    """
+    t0 = time.time()
+    a = (action or "record").lower().strip()
+    
+    learn_file = STATE_DIR / "learnings.json"
+    learnings = []
+    
+    if learn_file.exists():
+        try:
+            learnings = json.loads(learn_file.read_text())
+        except Exception:
+            learnings = []
+    
+    if a == "record":
+        if not technique:
+            return "technique required for record"
+        
+        learning_entry = {
+            "id": hashlib.md5(f"{technique}{target}{datetime.utcnow().isoformat()}".encode()).hexdigest()[:12],
+            "technique": technique,
+            "result": result,
+            "target": target,
+            "service": service,
+            "version": version,
+            "reason": reason,
+            "payload": payload,
+            "time_taken": time_taken,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+        
+        learnings.append(learning_entry)
+        learn_file.write_text(json.dumps(learnings, indent=2))
+        
+        _audit("learn", "recorded", target, f"technique={technique} result={result}")
+        
+        return f"✅ Learning recorded:\n" \
+               f"   Technique: {technique}\n" \
+               f"   Result: {result}\n" \
+               f"   Service: {service or 'N/A'} {version or ''}\n" \
+               f"   Reason: {reason or 'N/A'}\n" \
+               f"   Total learnings: {len(learnings)}"
+    
+    if a == "stats":
+        # Calculate success rates
+        stats = {}
+        for l in learnings:
+            tech = l.get("technique", "unknown")
+            result = l.get("result", "unknown")
+            
+            if tech not in stats:
+                stats[tech] = {"total": 0, "success": 0, "failed": 0, "partial": 0}
+            
+            stats[tech]["total"] += 1
+            if result == "success":
+                stats[tech]["success"] += 1
+            elif result == "failed":
+                stats[tech]["failed"] += 1
+            elif result == "partial":
+                stats[tech]["partial"] += 1
+        
+        # Calculate percentages and sort by success rate
+        ranked = []
+        for tech, counts in stats.items():
+            if counts["total"] > 0:
+                success_rate = (counts["success"] / counts["total"]) * 100
+                ranked.append({
+                    "technique": tech,
+                    "success_rate": success_rate,
+                    **counts
+                })
+        
+        ranked.sort(key=lambda x: x["success_rate"], reverse=True)
+        
+        lines = ["📊 Technique Success Rates"]
+        lines.append(f"   Total learnings: {len(learnings)}")
+        lines.append("")
+        
+        if ranked:
+            lines.append("   Rank | Technique | Success Rate | Total | Success | Failed")
+            lines.append("   " + "-" * 70)
+            for i, r in enumerate(ranked[:20], 1):
+                lines.append(f"   {i:4} | {r['technique'][:25]:25} | {r['success_rate']:12.1f}% | {r['total']:5} | {r['success']:7} | {r['failed']}")
+        else:
+            lines.append("   No data yet.")
+        
+        _audit("learn", "stats", "", f"total={len(learnings)}")
+        return "\n".join(lines)
+    
+    if a == "similar":
+        if not service and not version:
+            return "service or version required for similar search"
+        
+        # Find similar service/version combinations and what worked
+        matches = []
+        for l in learnings:
+            if l.get("result") != "success":
+                continue
+            
+            l_service = l.get("service", "").lower()
+            l_version = l.get("version", "")
+            
+            # Match by service
+            if service and service.lower() in l_service or l_service in service.lower():
+                matches.append(l)
+            # Match by version
+            elif version and version in l_version or l_version in version:
+                matches.append(l)
+        
+        lines = [f"🔍 Similar Targets ({len(matches)} matches)"]
+        
+        if matches:
+            lines.append("   Technique | Service | Version | Reason")
+            lines.append("   " + "-" * 60)
+            for m in matches[:15]:
+                lines.append(f"   {m.get('technique', '')[:20]:20} | {m.get('service', '')[:12]:12} | {m.get('version', ''):10} | {m.get('reason', '')[:15]}")
+            
+            # Recommend top techniques
+            technique_counts = {}
+            for m in matches:
+                tech = m.get("technique", "")
+                technique_counts[tech] = technique_counts.get(tech, 0) + 1
+            
+            if technique_counts:
+                top_techniques = sorted(technique_counts.items(), key=lambda x: x[1], reverse=True)
+                lines.append("")
+                lines.append("   🎯 Recommended techniques (by frequency):")
+                for tech, count in top_techniques[:5]:
+                    lines.append(f"      • {tech} (worked {count} times)")
+        else:
+            lines.append("   No similar successful attacks found.")
+        
+        _audit("learn", "similar", "", f"service={service} matches={len(matches)}")
+        return "\n".join(lines)
+    
+    if a == "forget":
+        if not technique:
+            return "technique required for forget"
+        
+        original_len = len(learnings)
+        learnings = [l for l in learnings if l.get("technique") != technique]
+        
+        if len(learnings) < original_len:
+            learn_file.write_text(json.dumps(learnings, indent=2))
+            _audit("learn", "forgotten", "", f"technique={technique}")
+            return f"✅ Removed {original_len - len(learnings)} entries for '{technique}'"
+        
+        return f"❌ No entries found for '{technique}'"
+    
+    return f"unknown action '{action}' — use record, stats, similar, or forget"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3: Hacker Intuition Database
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def intuition(action: str = "query", service: str = "", version: str = "",
+              context: str = "", confidence: float = 0.7) -> str:
+    """Query the hacker intuition database for likely vulnerabilities.
+    
+    Actions:
+      query     get likely vulns for a service/version
+      add       add a new intuition rule
+      remove    remove an intuition rule
+      list      list all intuition rules
+    
+    Args:
+      action: query | add | remove | list
+      service: service name (Apache, Nginx, WordPress, etc.)
+      version: service version
+      context: additional context (WAF, OS, config)
+      confidence: minimum confidence threshold (0.0-1.0)
+    """
+    t0 = time.time()
+    a = (action or "query").lower().strip()
+    
+    intuition_file = STATE_DIR / "intuition.json"
+    intuitions = []
+    
+    # Default intuition rules (hacker knowledge)
+    default_intuitions = [
+        {"service": "apache", "version_pattern": "2.4.4[9]|2.4.5[01]", 
+         "technique": "CVE-2021-41773", "confidence": 0.85, "description": "Apache Path Traversal"},
+        {"service": "apache", "version_pattern": "2.4.[0-3]|2.2",
+         "technique": "CVE-2021-40438", "confidence": 0.75, "description": "Apache Path Traversal (older)"},
+        {"service": "nginx", "version_pattern": "1.2[0-5]",
+         "technique": "CVE-2021-23017", "confidence": 0.70, "description": "Nginx Zero-Conf RCE"},
+        {"service": "wordpress", "version_pattern": "5\\.[0-7]",
+         "technique": "wp-scanner", "confidence": 0.80, "description": "WordPress vulnerability scan"},
+        {"service": "wordpress", "version_pattern": "",
+         "technique": "wp-login-brute", "confidence": 0.60, "description": "WordPress login brute force"},
+        {"service": "ssh", "version_pattern": "",
+         "technique": "hydra-brute", "confidence": 0.50, "description": "SSH brute force"},
+        {"service": "smb", "version_pattern": "",
+         "technique": "MS17-010", "confidence": 0.65, "description": "EternalBlue"},
+        {"service": "tomcat", "version_pattern": "8\\.[0-5]|7\\.",
+         "technique": "CVE-2017-12615", "confidence": 0.75, "description": "Tomcat RCE"},
+        {"service": "jenkins", "version_pattern": "",
+         "technique": "jenkins-groovy", "confidence": 0.70, "description": "Jenkins Groovy console"},
+        {"service": "docker", "version_pattern": "",
+         "technique": "docker-socket", "confidence": 0.80, "description": "Docker socket escape"},
+        {"service": "redis", "version_pattern": "",
+         "technique": "redis-sshd", "confidence": 0.75, "description": "Redis SSH key write"},
+        {"service": "mysql", "version_pattern": "5\\.[0-5]",
+         "technique": "mysql-udf", "confidence": 0.60, "description": "MySQL UDF RCE"},
+        {"service": "cisco", "version_pattern": "",
+         "technique": "cisco-enable", "confidence": 0.55, "description": "Cisco enable password brute"},
+        {"service": "fortigate", "version_pattern": "6\\.2",
+         "technique": "CVE-2018-13379", "confidence": 0.90, "description": "FortiGate RCE"},
+        {"service": "netgear", "version_pattern": "",
+         "technique": "netgear-default", "confidence": 0.70, "description": "Netgear default creds"},
+    ]
+    
+    if intuition_file.exists():
+        try:
+            intuitions = json.loads(intuition_file.read_text())
+        except Exception:
+            intuitions = default_intuitions
+    else:
+        intuitions = default_intuitions.copy()
+        intuition_file.write_text(json.dumps(intuitions, indent=2))
+    
+    if a == "query":
+        if not service:
+            return "service required for query"
+        
+        # Find matching intuitions
+        matches = []
+        service_lower = service.lower()
+        
+        for intuition in intuitions:
+            int_service = intuition.get("service", "").lower()
+            version_pattern = intuition.get("version_pattern", "")
+            
+            # Check service match
+            if int_service in service_lower or service_lower in int_service:
+                # Check version match if pattern exists
+                if version_pattern:
+                    if version and re.search(version_pattern, version, re.IGNORECASE):
+                        matches.append(intuition)
+                    elif not version:
+                        # No version specified, include anyway
+                        matches.append(intuition)
+                else:
+                    # No version pattern, include
+                    matches.append(intuition)
+        
+        # Filter by confidence
+        matches = [m for m in matches if m.get("confidence", 0) >= confidence]
+        
+        # Sort by confidence
+        matches.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+        
+        lines = [f"🧠 Hacker Intuition for: {service}"]
+        if version:
+            lines.append(f"   Version: {version}")
+        if context:
+            lines.append(f"   Context: {context}")
+        lines.append(f"   Confidence threshold: {confidence:.0%}")
+        lines.append("")
+        
+        if matches:
+            lines.append(f"   Found {len(matches)} likely vulnerabilities:")
+            lines.append("")
+            for i, m in enumerate(matches[:10], 1):
+                lines.append(f"   {i}. {m.get('technique', '')}")
+                lines.append(f"      Description: {m.get('description', '')}")
+                lines.append(f"      Confidence: {m.get('confidence', 0):.0%}")
+                lines.append("")
+        else:
+            lines.append("   No matching intuitions found.")
+        
+        _audit("intuition", "query", "", f"service={service} matches={len(matches)}")
+        return "\n".join(lines)
+    
+    if a == "add":
+        if not service or not context:  # context used as technique here
+            return "service and technique (context) required for add"
+        
+        new_intuition = {
+            "service": service.lower(),
+            "version_pattern": version,
+            "technique": context,
+            "confidence": confidence,
+            "description": context,
+            "added": datetime.utcnow().isoformat() + "Z"
+        }
+        
+        # Check if already exists
+        exists = any(
+            i.get("service") == new_intuition["service"] and 
+            i.get("technique") == new_intuition["technique"]
+            for i in intuitions
+        )
+        
+        if not exists:
+            intuitions.append(new_intuition)
+            intuition_file.write_text(json.dumps(intuitions, indent=2))
+            _audit("intuition", "added", "", f"service={service} technique={context}")
+            return f"✅ Intuition added:\n   Service: {service}\n   Technique: {context}\n   Confidence: {confidence:.0%}"
+        
+        return f"⚠️  Intuition already exists"
+    
+    if a == "remove":
+        if not service or not context:
+            return "service and technique required for remove"
+        
+        original_len = len(intuitions)
+        intuitions = [
+            i for i in intuitions
+            if not (i.get("service") == service.lower() and i.get("technique") == context)
+        ]
+        
+        if len(intuitions) < original_len:
+            intuition_file.write_text(json.dumps(intuitions, indent=2))
+            _audit("intuition", "removed", "", f"service={service} technique={context}")
+            return f"✅ Intuition removed"
+        
+        return f"❌ Intuition not found"
+    
+    if a == "list":
+        lines = [f"🧠 Hacker Intuition Database ({len(intuitions)} rules)"]
+        lines.append("")
+        lines.append("   Service | Version Pattern | Technique | Confidence")
+        lines.append("   " + "-" * 70)
+        
+        for i in sorted(intuitions, key=lambda x: x.get("confidence", 0), reverse=True):
+            lines.append(
+                f"   {i.get('service', '')[:12]:12} | {i.get('version_pattern', '')[:15]:15} | "
+                f"{i.get('technique', '')[:25]:25} | {i.get('confidence', 0):.0%}"
+            )
+        
+        _audit("intuition", "list", "", f"total={len(intuitions)}")
+        return "\n".join(lines)
+    
+    return f"unknown action '{action}' — use query, add, remove, or list"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3: Auto-Update Corpus
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def update_corpus(action: str = "check", source: str = "", 
+                  update_index: bool = True) -> str:
+    """Update the knowledge corpus with new CVEs and exploits.
+    
+    Actions:
+      check     check for updates from all sources
+      fetch     fetch updates from a specific source
+      stats     show corpus statistics
+      sources   list available sources
+    
+    Args:
+      action: check | fetch | stats | sources
+      source: source name (nvd, exploitdb, cve, nuclei)
+      update_index: rebuild embeddings after update
+    """
+    t0 = time.time()
+    a = (action or "check").lower().strip()
+    
+    corpus_meta = INDEX / "corpus_meta.json"
+    
+    if not corpus_meta.exists():
+        # Initialize corpus metadata
+        corpus_data = {
+            "sources": {
+                "nvd": {"last_update": None, "count": 0, "url": "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-RECENT.json"},
+                "exploitdb": {"last_update": None, "count": 0, "url": "https://raw.githubusercontent.com/offensive-security/exploitdb-text/master/gentoo/exploitdb.txt"},
+                "nuclei": {"last_update": None, "count": 0, "url": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/master/imports.json"},
+                "cve": {"last_update": None, "count": 0, "url": "https://cve.circl.lu/api/download/"}
+            },
+            "last_full_update": None,
+            "total_entries": 0
+        }
+        corpus_meta.write_text(json.dumps(corpus_data, indent=2))
+    
+    try:
+        corpus_data = json.loads(corpus_meta.read_text())
+    except Exception:
+        corpus_data = {"sources": {}, "last_full_update": None, "total_entries": 0}
+    
+    if a == "sources":
+        lines = ["📚 Available Corpus Sources"]
+        lines.append("")
+        for src, info in corpus_data.get("sources", {}).items():
+            lines.append(f"   {src}:")
+            lines.append(f"      URL: {info.get('url', 'N/A')}")
+            lines.append(f"      Last update: {info.get('last_update', 'Never')}")
+            lines.append(f"      Entries: {info.get('count', 0)}")
+            lines.append("")
+        
+        _audit("update_corpus", "sources", "", "")
+        return "\n".join(lines)
+    
+    if a == "stats":
+        total = sum(s.get("count", 0) for s in corpus_data.get("sources", {}).values())
+        
+        lines = ["📊 Corpus Statistics"]
+        lines.append("")
+        lines.append(f"   Total entries: {total}")
+        lines.append(f"   Last full update: {corpus_data.get('last_full_update', 'Never')}")
+        lines.append("")
+        lines.append("   Source | Entries | Last Update")
+        lines.append("   " + "-" * 50)
+        
+        for src, info in corpus_data.get("sources", {}).items():
+            lines.append(
+                f"   {src:12} | {info.get('count', 0):7} | {info.get('last_update', 'Never')[:19]}"
+            )
+        
+        _audit("update_corpus", "stats", "", f"total={total}")
+        return "\n".join(lines)
+    
+    if a == "check":
+        lines = ["🔄 Checking for corpus updates..."]
+        lines.append("")
+        
+        updates_available = 0
+        for src in corpus_data.get("sources", {}):
+            result = update_corpus(action="fetch", source=src, update_index=False)
+            if "new entries" in result.lower():
+                updates_available += 1
+        
+        lines.append(f"   Check complete. {updates_available} sources have updates.")
+        
+        _audit("update_corpus", "check", "", f"updates={updates_available}")
+        return "\n".join(lines)
+    
+    if a == "fetch":
+        if source and source not in corpus_data.get("sources", {}):
+            return f"Unknown source '{source}'. Use 'sources' to list available."
+        
+        # Fetch from NVD (National Vulnerability Database)
+        if not source or source == "nvd":
+            url = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-RECENT.json"
+            code, body, _ = _http(url, timeout=60)
+            
+            if code == 200:
+                try:
+                    data = json.loads(body)
+                    new_count = len(data.get("CVE_Items", []))
+                    
+                    corpus_data["sources"]["nvd"]["last_update"] = datetime.utcnow().isoformat() + "Z"
+                    corpus_data["sources"]["nvd"]["count"] = new_count
+                    
+                    # Save CVE data
+                    cve_dir = INDEX / "cves"
+                    cve_dir.mkdir(parents=True, exist_ok=True)
+                    (cve_dir / "recent.json").write_text(body[:10_000_000])  # Limit size
+                    
+                    _audit("update_corpus", "fetched", "nvd", f"count={new_count}")
+                    return f"✅ NVD updated: {new_count} CVEs fetched\n   Saved to: {cve_dir / 'recent.json'}"
+                except Exception as e:
+                    return f"❌ Error parsing NVD data: {e}"
+            
+            return f"❌ NVD fetch failed (HTTP {code})"
+        
+        return f"Fetch from '{source}' not yet implemented"
+    
+    return f"unknown action '{action}' — use check, fetch, stats, or sources"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3: Cross-Session Learning Aggregator
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def aggregate(action: str = "report", target: str = "", 
+              include_learnings: bool = True, include_loot: bool = True) -> str:
+    """Aggregate learning across sessions for a target.
+    
+    Actions:
+      report    generate cross-session report
+      summary   quick summary of what's known
+      export    export all data for a target
+      compare   compare two targets
+    
+    Args:
+      action: report | summary | export | compare
+      target: target host
+      include_learnings: include technique learnings
+      include_loot: include collected loot
+    """
+    t0 = time.time()
+    a = (action or "report").lower().strip()
+    
+    if a == "summary":
+        if not target:
+            return "target required for summary"
+        
+        # Get state
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        state_data = {}
+        if state_file.exists():
+            try:
+                state_data = json.loads(state_file.read_text())
+            except Exception:
+                pass
+        
+        lines = [f"📋 Quick Summary: {target}"]
+        lines.append("")
+        
+        if state_data:
+            lines.append(f"   Phase: {state_data.get('phase', 'unknown')}")
+            discovered = state_data.get("discovered", {})
+            
+            if discovered.get("ports"):
+                lines.append(f"   Ports: {', '.join(map(str, discovered['ports'][:10]))}")
+            if discovered.get("vulns"):
+                lines.append(f"   Vulns: {', '.join(discovered['vulns'][:5])}")
+            if discovered.get("creds"):
+                lines.append(f"   Creds: {len(discovered['creds'])} found")
+        else:
+            lines.append("   No state data found.")
+        
+        _audit("aggregate", "summary", target, "")
+        return "\n".join(lines)
+    
+    if a == "report":
+        if not target:
+            return "target required for report"
+        
+        # Gather all data
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        state_data = {}
+        if state_file.exists():
+            try:
+                state_data = json.loads(state_file.read_text())
+            except Exception:
+                pass
+        
+        # Get chain history
+        chain_dir = STATE_DIR / "chains"
+        chain_files = list(chain_dir.glob(f"*{target.replace('/', '_').replace(':', '_')}*.json")) if chain_dir.exists() else []
+        
+        lines = [f"📄 Cross-Session Report: {target}"]
+        lines.append(f"   Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("")
+        
+        # State summary
+        lines.append("   === Current State ===")
+        if state_data:
+            lines.append(f"   Phase: {state_data.get('phase', 'unknown')}")
+            lines.append(f"   Updated: {state_data.get('updated', 'N/A')}")
+        else:
+            lines.append("   No state data.")
+        lines.append("")
+        
+        # Discovered info
+        if include_learnings and state_data.get("discovered"):
+            discovered = state_data["discovered"]
+            lines.append("   === Discovered ===")
+            if discovered.get("ports"):
+                lines.append(f"   Ports: {discovered['ports']}")
+            if discovered.get("services"):
+                lines.append(f"   Services: {discovered['services']}")
+            if discovered.get("vulns"):
+                lines.append(f"   Vulnerabilities: {discovered['vulns']}")
+            if discovered.get("creds"):
+                lines.append(f"   Credentials: {len(discovered['creds'])} found")
+            lines.append("")
+        
+        # Attempted techniques
+        if state_data.get("attempted"):
+            lines.append("   === Attempted Techniques ===")
+            for attempt in state_data["attempted"][-10:]:  # Last 10
+                lines.append(f"   • {attempt.get('technique', '')}: {attempt.get('result', '')}")
+            lines.append("")
+        
+        # Chain history
+        if chain_files:
+            lines.append(f"   === Attack Chains ({len(chain_files)}) ===")
+            for cf in chain_files[:5]:
+                try:
+                    cf_data = json.loads(cf.read_text())
+                    lines.append(f"   • {cf.stem}: {cf_data.get('summary', {}).get('success', 0)} steps succeeded")
+                except Exception:
+                    pass
+            lines.append("")
+        
+        # Loot
+        if include_loot:
+            loot_dir = LOOT / target.replace('/', '_').replace(':', '_')
+            if loot_dir.exists():
+                loot_files = list(loot_dir.rglob("*"))
+                if loot_files:
+                    lines.append(f"   === Loot ({len(loot_files)} files) ===")
+                    for lf in loot_files[:10]:
+                        lines.append(f"   • {lf.name}")
+                    lines.append("")
+        
+        _audit("aggregate", "report", target, "")
+        return "\n".join(lines)
+    
+    if a == "export":
+        if not target:
+            return "target required for export"
+        
+        # Create export package
+        export_dir = STATE_DIR / "exports" / target.replace('/', '_').replace(':', '_')
+        export_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Export state
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        if state_file.exists():
+            (export_dir / "state.json").write_text(state_file.read_text())
+        
+        # Export chains
+        chain_dir = STATE_DIR / "chains"
+        if chain_dir.exists():
+            chain_files = list(chain_dir.glob(f"*{target.replace('/', '_').replace(':', '_')}*.json"))
+            for cf in chain_files:
+                (export_dir / cf.name).write_text(cf.read_text())
+        
+        # Export loot
+        loot_dir = LOOT / target.replace('/', '_').replace(':', '_')
+        if loot_dir.exists():
+            import shutil
+            loot_export = export_dir / "loot"
+            loot_export.mkdir(parents=True, exist_ok=True)
+            for lf in loot_dir.rglob("*"):
+                if lf.is_file():
+                    dest = loot_export / lf.relative_to(loot_dir)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(lf.read_text())
+        
+        _audit("aggregate", "export", target, f"dir={export_dir}")
+        return f"✅ Exported to: {export_dir}"
+    
+    return f"unknown action '{action}' — use report, summary, export, or compare"
+
+
 if __name__ == "__main__":
     _audit("server", "start", detail=str(INDEX))
     mcp.run()
