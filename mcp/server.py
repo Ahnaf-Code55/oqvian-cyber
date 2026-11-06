@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+from datetime import datetime
 
 import numpy as np
 
@@ -45,10 +46,14 @@ STATE = Path.home() / ".local" / "share" / "oqvian"
 AUDIT = STATE / "audit.jsonl"
 SCOPE_FILE = Path.home() / ".config" / "oqvian" / "scope.json"
 LOOT = STATE / "loot"
+STATE_DIR = STATE / "state"
+EXPLOIT_DB = Path.home() / "exploit-db"
 MAX_OUTPUT = 100_000
 
 STATE.mkdir(parents=True, exist_ok=True)
 LOOT.mkdir(parents=True, exist_ok=True)
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+EXPLOIT_DB.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_SCOPE = {
     "mode": "restricted",
@@ -62,12 +67,13 @@ DEFAULT_SCOPE = {
 
 mcp = MCPServer(
     name="oqvian",
-    version="1.0.0",
+    version="1.1.0",
     instructions=(
         "OQVIAN cyber-operations toolserver. Call kb before answering any "
         "security question so answers are grounded in ATT&CK/CWE/KEV/Sigma/atomics. "
         "Call recon for live DNS/HTTP/TLS/port evidence and execute to run "
-        "installed security tools. Every target must be in "
+        "installed security tools. Use state to track session progress and loot "
+        "to collect findings. Use searchsploit to find exploits. Every target must be in "
         "~/.config/oqvian/scope.json; every call is audited."
     ),
 )
@@ -1206,6 +1212,426 @@ def transform(data: str, op: str = "base64") -> str:
     """Encode, decode or hash a value: base64, base64d, url, urld, hex, hexd,
     rot13, md5, sha1, sha256."""
     return encode_transform(data, op)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1: State Management Tool
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def state(action: str = "get", target: str = "", phase: str = "", 
+          discovered: str = "", attempted: str = "", loot_data: str = "") -> str:
+    """Manage session state for tracking attack progress.
+    
+    Actions:
+      get       retrieve state for a target (or all if target empty)
+      set       update state with new discoveries/progress
+      clear     delete state for a target (or all if target empty)
+    
+    Args:
+      action: get | set | clear
+      target: the target being attacked (required for set, optional for get/clear)
+      phase: current phase (recon/scan/enumerate/exploit/privesc/lateral) - for set
+      discovered: JSON string of discovered info (ports, services, creds, vulns) - for set
+      attempted: JSON string of attempted techniques - for set
+      loot_data: JSON string of collected findings - for set
+    """
+    t0 = time.time()
+    a = (action or "get").lower().strip()
+    
+    if a == "clear":
+        cleared = 0
+        if target:
+            state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+            if state_file.exists():
+                state_file.unlink()
+                cleared = 1
+        else:
+            for sf in STATE_DIR.glob("*.json"):
+                sf.unlink()
+                cleared += 1
+        _audit("state", "clear", target, f"cleared={cleared}")
+        return f"Cleared {cleared} state file(s)"
+    
+    if a == "get":
+        state_files = list(STATE_DIR.glob("*.json"))
+        if not state_files:
+            _audit("state", "get", target, "no state")
+            return "No session state found."
+        
+        results = []
+        for sf in state_files:
+            try:
+                data = json.loads(sf.read_text())
+                if target and data.get("target") != target:
+                    continue
+                results.append({"file": sf.name, "data": data})
+            except Exception as e:
+                results.append({"file": sf.name, "error": str(e)})
+        
+        if not results:
+            result = f"No state found for target: {target}"
+        else:
+            result = json.dumps(results, indent=2)
+        _audit("state", "get", target, f"found={len(results)}")
+        return result
+    
+    if a == "set":
+        if not target:
+            return "target required for set action"
+        
+        state_data = {
+            "target": target,
+            "updated": datetime.utcnow().isoformat() + "Z",
+            "phase": phase or "unknown"
+        }
+        
+        if discovered:
+            try:
+                state_data["discovered"] = json.loads(discovered)
+            except json.JSONDecodeError:
+                state_data["discovered"] = {"raw": discovered}
+        
+        if attempted:
+            try:
+                state_data["attempted"] = json.loads(attempted)
+            except json.JSONDecodeError:
+                state_data["attempted"] = [{"raw": attempted}]
+        
+        if loot_data:
+            try:
+                state_data["loot"] = json.loads(loot_data)
+            except json.JSONDecodeError:
+                state_data["loot"] = [{"raw": loot_data}]
+        
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        if state_file.exists():
+            try:
+                existing = json.loads(state_file.read_text())
+                for key in ["discovered", "attempted", "loot"]:
+                    if key in state_data and key in existing:
+                        if isinstance(state_data[key], dict) and isinstance(existing[key], dict):
+                            existing[key].update(state_data[key])
+                        elif isinstance(state_data[key], list) and isinstance(existing[key], list):
+                            existing[key] = list({id(x): x for x in existing[key] + state_data[key]}.values())
+                        else:
+                            existing[key] = state_data[key]
+                if phase:
+                    existing["phase"] = phase
+                existing["updated"] = state_data["updated"]
+                state_data = existing
+            except Exception:
+                pass
+        
+        try:
+            state_file.write_text(json.dumps(state_data, indent=2))
+            _audit("state", "set", target, f"phase={phase}")
+            return f"State saved for {target} -> {state_file}"
+        except Exception as e:
+            _audit("state", "error", target, str(e), ok=False)
+            return f"Error saving state: {e}"
+    
+    return f"unknown action '{action}' — use get, set, or clear"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1: Loot Collection Tool
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def loot(action: str = "list", target: str = "", loot_type: str = "", 
+         name: str = "", content: str = "", path: str = "") -> str:
+    """Collect and organize findings (loot) from attacks.
+    
+    Actions:
+      list      show all loot (summary view)
+      get       retrieve loot for a target (filter by type optional)
+      add       add a new loot item
+    
+    Args:
+      action: list | get | add
+      target: the target (required for add/get, optional for list)
+      loot_type: type of finding (flag/credential/config/shell/dump/screenshot) - for add/get
+      name: descriptive name for the finding - for add
+      content: the actual content (password, flag, config text) - for add
+      path: path to file if content stored externally - for add
+    """
+    t0 = time.time()
+    a = (action or "list").lower().strip()
+    
+    if a == "list":
+        index_file = LOOT / "index.json"
+        if not index_file.exists():
+            _audit("loot", "list", "", "no loot")
+            return "No loot collected yet."
+        
+        try:
+            index = json.loads(index_file.read_text())
+        except Exception:
+            return "Error reading loot index."
+        
+        if not index:
+            _audit("loot", "list", "", "no loot")
+            return "No loot collected yet."
+        
+        by_target: dict[str, list] = {}
+        for item in index:
+            t = item.get("target", "unknown")
+            if t not in by_target:
+                by_target[t] = []
+            by_target[t].append(item)
+        
+        lines = [f"🏆 LOOT INDEX ({len(index)} items)"]
+        for t, items in sorted(by_target.items()):
+            types = {}
+            for item in items:
+                lt = item.get("type", "unknown")
+                types[lt] = types.get(lt, 0) + 1
+            lines.append(f"\n🎯 {t} ({len(items)} items)")
+            for lt, count in sorted(types.items()):
+                lines.append(f"   ├─ {lt}: {count}")
+        
+        _audit("loot", "list", "", f"total={len(index)}")
+        return "\n".join(lines)
+    
+    if a == "get":
+        index_file = LOOT / "index.json"
+        if not index_file.exists():
+            _audit("loot", "get", target, "no loot")
+            return "No loot collected yet."
+        
+        try:
+            index = json.loads(index_file.read_text())
+        except Exception:
+            index = []
+        
+        filtered = []
+        for item in index:
+            if target and item.get("target") != target:
+                continue
+            if loot_type and item.get("type") != loot_type:
+                continue
+            try:
+                loot_file = Path(item.get("file", ""))
+                if loot_file.exists():
+                    full_item = json.loads(loot_file.read_text())
+                    filtered.append(full_item)
+            except Exception:
+                filtered.append(item)
+        
+        if not filtered:
+            result = f"No loot found (target={target}, type={loot_type})"
+        else:
+            result = json.dumps(filtered, indent=2)
+        
+        _audit("loot", "get", target, f"found={len(filtered)}")
+        return result
+    
+    if a == "add":
+        if not target or not name:
+            return "target and name required for add action"
+        
+        loot_target_dir = LOOT / target.replace('/', '_').replace(':', '_')
+        loot_target_dir.mkdir(parents=True, exist_ok=True)
+        
+        loot_item = {
+            "target": target,
+            "type": loot_type or "finding",
+            "name": name,
+            "content": content,
+            "path": path,
+            "collected": datetime.utcnow().isoformat() + "Z"
+        }
+        
+        safe_name = name.replace('/', '_').replace(':', '_')[:50]
+        loot_file = loot_target_dir / f"{loot_item['type']}_{safe_name}.json"
+        
+        try:
+            loot_file.write_text(json.dumps(loot_item, indent=2))
+            
+            index_file = LOOT / "index.json"
+            index = []
+            if index_file.exists():
+                try:
+                    index = json.loads(index_file.read_text())
+                except Exception:
+                    index = []
+            
+            index.append({
+                "target": target,
+                "type": loot_item["type"],
+                "name": name,
+                "file": str(loot_file),
+                "collected": loot_item["collected"]
+            })
+            index_file.write_text(json.dumps(index, indent=2))
+            
+            _audit("loot", "add", target, f"type={loot_item['type']} name={name}")
+            return f"Loot saved: {loot_file}"
+        except Exception as e:
+            _audit("loot", "error", target, str(e), ok=False)
+            return f"Error saving loot: {e}"
+    
+    return f"unknown action '{action}' — use list, get, or add"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1: Searchsploit Integration
+# --------------------------------------------------------------------------- #
+def _ensure_exploit_db() -> bool:
+    """Ensure Exploit-DB index is downloaded."""
+    if (EXPLOIT_DB / "index.json").exists():
+        return True
+    
+    try:
+        code, body, _ = _http(
+            "https://raw.githubusercontent.com/offensive-security/exploitdb-text/master/exploits.json",
+            timeout=60
+        )
+        if code == 200:
+            try:
+                data = json.loads(body)
+                (EXPLOIT_DB / "exploits.json").write_text(body)
+                
+                exploits = []
+                for item in data.get("exploits", [])[:5000]:
+                    exploits.append({
+                        "id": item.get("id", ""),
+                        "date": item.get("date", ""),
+                        "type": item.get("type", ""),
+                        "title": item.get("title", ""),
+                        "platform": item.get("platform", ""),
+                        "authors": item.get("authors", []),
+                        "ref": item.get("ref", ""),
+                        "description": item.get("description", "")
+                    })
+                
+                index_data = {
+                    "updated": datetime.utcnow().isoformat() + "Z",
+                    "count": len(exploits),
+                    "exploits": exploits
+                }
+                (EXPLOIT_DB / "index.json").write_text(json.dumps(index_data, indent=2))
+                return True
+            except Exception:
+                return False
+        return False
+    except Exception:
+        return False
+
+
+@mcp.tool()
+def searchsploit(query: str = "", cve: str = "", platform: str = "", limit: int = 10) -> str:
+    """Search Exploit-DB for exploits by query, CVE, or platform.
+    
+    Args:
+      query: search terms (service name, vulnerability, keywords)
+      cve: CVE ID to search for
+      platform: platform filter (linux, windows, apple, etc.)
+      limit: max results (1-50)
+    """
+    t0 = time.time()
+    limit = max(1, min(int(limit), 50))
+    
+    if not _ensure_exploit_db():
+        result = "Exploit-DB not downloaded. Attempting download..."
+        if not _ensure_exploit_db():
+            result = "Failed to download Exploit-DB. Consider installing exploitdb package."
+        _audit("searchsploit", "error", query, result, ok=False)
+        return result
+    
+    index_file = EXPLOIT_DB / "index.json"
+    if not index_file.exists():
+        _audit("searchsploit", "error", query, "index not found", ok=False)
+        return "Exploit-DB index not found."
+    
+    try:
+        index_data = json.loads(index_file.read_text())
+    except Exception:
+        _audit("searchsploit", "error", query, "parse error", ok=False)
+        return "Error reading Exploit-DB index."
+    
+    exploits = index_data.get("exploits", [])
+    results = []
+    
+    query_lower = query.lower() if query else ""
+    cve_upper = cve.upper() if cve else ""
+    platform_lower = platform.lower() if platform else ""
+    
+    for exp in exploits:
+        if platform_lower and exp.get("platform", "").lower() != platform_lower:
+            continue
+        
+        if cve_upper:
+            if cve_upper not in exp.get("ref", "") and cve_upper not in exp.get("title", ""):
+                continue
+        
+        if query_lower:
+            title = exp.get("title", "").lower()
+            desc = exp.get("description", "").lower()
+            ref = exp.get("ref", "").lower()
+            
+            if not (query_lower in title or query_lower in desc or query_lower in ref):
+                continue
+        
+        results.append({
+            "id": exp.get("id", ""),
+            "date": exp.get("date", ""),
+            "type": exp.get("type", ""),
+            "title": exp.get("title", ""),
+            "platform": exp.get("platform", ""),
+            "authors": exp.get("authors", []),
+            "ref": exp.get("ref", ""),
+            "description": exp.get("description", "")[:500]
+        })
+        
+        if len(results) >= limit:
+            break
+    
+    if not results:
+        result = f"No exploits found (query={query}, cve={cve}, platform={platform})"
+    else:
+        lines = [f"🔍 Exploit-DB Results ({len(results)} matches)"]
+        for exp in results:
+            lines.append(f"\n📄 [{exp.get('id', '')}] {exp.get('title', '')}")
+            lines.append(f"   Platform: {exp.get('platform', '')}")
+            lines.append(f"   Type: {exp.get('type', '')}")
+            lines.append(f"   Date: {exp.get('date', '')}")
+            lines.append(f"   Ref: {exp.get('ref', '')}")
+            lines.append(f"   Authors: {', '.join(exp.get('authors', []))}")
+            if exp.get("description"):
+                lines.append(f"   Description: {exp.get('description', '')}")
+        result = "\n".join(lines)
+    
+    _audit("searchsploit", "ok", query, f"found={len(results)}")
+    return result
+
+
+@mcp.tool()
+def searchsploit_get(exploit_id: str) -> str:
+    """Get full exploit code by Exploit-DB ID.
+    
+    Args:
+      exploit_id: Exploit-DB ID (e.g., "40418" or "40418.py")
+    """
+    t0 = time.time()
+    
+    url = f"https://raw.githubusercontent.com/offensive-security/exploitdb-text/master/exploits/{exploit_id}"
+    code, body, _ = _http(url, timeout=30)
+    
+    if code != 200:
+        result = f"Exploit {exploit_id} not found (HTTP {code})"
+        _audit("searchsploit_get", "error", exploit_id, result, ok=False)
+        return result
+    
+    cache_file = EXPLOIT_DB / "exploits" / exploit_id
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_file.write_text(body)
+    except Exception:
+        pass
+    
+    _audit("searchsploit_get", "ok", exploit_id, "fetched")
+    return f"# Exploit: {exploit_id}\n# Source: https://exploit-db.com/exploits/{exploit_id}\n\n{body[:8000]}"
+
 
 if __name__ == "__main__":
     _audit("server", "start", detail=str(INDEX))
