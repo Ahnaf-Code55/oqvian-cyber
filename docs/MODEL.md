@@ -1,15 +1,15 @@
-# The OQVIAN model — OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1
+# The OQVIAN model — OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.2 AGGRESSIVE
 
 OQVIAN ships **one model**. It is the only model the operator's CISO drives.
 
 ```
 name        oqvian-cyber-control-full-unlocked-v1.1:latest
-display     OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.1
+display     OQVIAN-CYBER-CONTROL-FULL UNLOCKED V1.2 AGGRESSIVE
 base        Qwen2.5-7B-Instruct-abliterated  (Q4_K_M)
 params      7.6B
 arch        qwen2  ·  32K native context (num_ctx 16384)  ·  Q4_K_M
 capability  completion + tools
-persona     one unified operator/CISO system prompt (models/Modelfile.unlocked)
+persona     aggressive offensive cyber warfare engine (models/Modelfile.unlocked)
 template    Qwen2.5 tool template (models/qwen-tools.template)
 disk        4.7 GB (weights stored once)
 ```
