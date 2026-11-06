@@ -329,6 +329,7 @@ release **assets**, never in git.
 | `DSH_PERMISSION_MODE=danger-full-access` on the web UI | UI stops prompting for tool calls | Only `oqvian-cli` sets it; web keeps `ask` |
 | `modelRoutes: [ollama-local]` under `agent-default-model` | Already in `settings.yaml`; harmless but redundant | Leave it, or remove it — do not "fix" anything else to chase it |
 | `timeoutMs` under the provider | It **is** read — forwarded to the SDK as the per-request `timeout`; the old "never read" note here was wrong | Keep it **above** `streamIdleTimeoutMs` (7200000 vs 3600000). It is the SDK clock, not the idle watchdog |
+| A tool turn calls the tool, then the **final answer** dies as `[bridge error] object of type 'NoneType' has no len()` | the bridge logged `len(calls)` while `_parse` returns `calls=None` for a plain-text turn (the normal final answer) | Fixed in `mcp/toolcall_proxy.py` (`n_calls = len(calls) if calls else 0`). Update to a build with that guard, or the second half of every tool call fails |
 | Building a multi-GB artefact in `/tmp` | `/tmp` here is a 7.8 GB tmpfs — `No space left on device`. Build in `~/.cache` | — |
 | Overwriting a running bash script in place | bash re-reads by byte offset → `syntax error near unexpected token` | Write to a new file, then `mv` |
 | `npm --os=win32 --cpu=x64 …` | The supported way to prime a cross-platform cache | Verify with a real `--offline` install |
@@ -378,7 +379,7 @@ from. The `.Tools` count is the proof that matters.
 | `scripts/install-release-assets.sh` | Consumes release assets; offline; `--from-dir` |
 | `scripts/brand_harness.py` | 9-string OQVIAN HARNESS rebrand; `--check`; idempotent |
 | `scripts/preflight.sh`, `scripts/setup-harness.sh` | pre-flight and a second harness setup entry |
-| `mcp/server.py` | 5 tools, 22 internals, scope + audit, FTS5/hybrid |
+| `mcp/server.py` | 5 tools (`kb` 9 / `recon` 8 / `governance` 2 named actions, `execute` ~40 installed tools, `transform` 10 codecs), scope + audit, FTS5/hybrid |
 | `mcp/smoke_test.py` | 19 checks, no model involved |
 | `models/build-models.sh` | Installs the tool template; early-exits when models are already built |
 | `models/Modelfile.unlocked` | the unified operator/CISO prompt |
