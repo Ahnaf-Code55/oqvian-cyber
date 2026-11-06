@@ -1633,6 +1633,560 @@ def searchsploit_get(exploit_id: str) -> str:
     return f"# Exploit: {exploit_id}\n# Source: https://exploit-db.com/exploits/{exploit_id}\n\n{body[:8000]}"
 
 
+# --------------------------------------------------------------------------- #
+# Phase 2: Attack Chain Engine
+# --------------------------------------------------------------------------- #
+
+# Pre-defined attack chains
+ATTACK_CHAINS = {
+    "web-app": {
+        "name": "Web Application Attack Chain",
+        "description": "Full web app assessment: recon → scan → enumerate → exploit",
+        "steps": [
+            {"name": "recon", "tool": "recon", "action": "http", "args": {"target": "{target}"},
+             "update_state": {"phase": "recon"}},
+            {"name": "tech_detect", "tool": "execute", "action": "tool", 
+             "args": {"tool": "httpx", "args": "-u {target} -tech-detect"},
+             "update_state": {"phase": "recon"}},
+            {"name": "port_scan", "tool": "recon", "action": "ports", 
+             "args": {"target": "{target}", "options": "1-1024"},
+             "update_state": {"phase": "scan"}},
+            {"name": "vuln_scan", "tool": "execute", "action": "tool",
+             "args": {"tool": "nuclei", "args": "-u {target} -severity critical,high -silent"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "dir_enum", "tool": "execute", "action": "tool",
+             "args": {"tool": "ffuf", "args": "-u {target}/FUZZ -w /usr/share/wordlists/dirb/common.txt -mc 200,301,302,403"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "js_crawl", "tool": "execute", "action": "tool",
+             "args": {"tool": "katana", "args": "-u {target} -js-links -crawl"},
+             "update_state": {"phase": "enumerate"}},
+        ]
+    },
+    "network": {
+        "name": "Network Attack Chain",
+        "description": "Network reconnaissance and service exploitation",
+        "steps": [
+            {"name": "dns_enum", "tool": "recon", "action": "dns_enum", 
+             "args": {"target": "{target}"},
+             "update_state": {"phase": "recon"}},
+            {"name": "subdomain_enum", "tool": "recon", "action": "subdomains",
+             "args": {"target": "{target}"},
+             "update_state": {"phase": "recon"}},
+            {"name": "port_scan", "tool": "recon", "action": "ports",
+             "args": {"target": "{target}", "options": "1-65535"},
+             "update_state": {"phase": "scan"}},
+            {"name": "service_enum", "tool": "execute", "action": "tool",
+             "args": {"tool": "nmap", "args": "-sV -sC -T4 {target}"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "vuln_scan", "tool": "execute", "action": "tool",
+             "args": {"tool": "nuclei", "args": "-host {target} -severity critical,high -silent"},
+             "update_state": {"phase": "enumerate"}},
+        ]
+    },
+    "ad-attack": {
+        "name": "Active Directory Attack Chain",
+        "description": "AD enumeration and exploitation",
+        "steps": [
+            {"name": "smb_enum", "tool": "execute", "action": "tool",
+             "args": {"tool": "netexec", "args": "smb {target} -u {user} -p '{pass}' -stats"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "user_enum", "tool": "execute", "action": "tool",
+             "args": {"tool": "netexec", "args": "smb {target} -u {user} -p '{pass}' -users"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "pass_policy", "tool": "execute", "action": "tool",
+             "args": {"tool": "netexec", "args": "smb {target} -u {user} -p '{pass}' -pass-pol"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "kerberos_enum", "tool": "execute", "action": "tool",
+             "args": {"tool": "certipy", "args": "find -dc-ip {target} -domain {domain}"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "as_replay", "tool": "execute", "action": "tool",
+             "args": {"tool": "impacket-GetUserSPNs", "args": "-dc-ip {target} -request -hashes :{hash} {domain}/{user}"},
+             "update_state": {"phase": "exploit"}},
+        ]
+    },
+    "box-take": {
+        "name": "Box Takeover Chain",
+        "description": "Full box takeover: initial access → privesc → root",
+        "steps": [
+            {"name": "recon", "tool": "recon", "action": "http",
+             "args": {"target": "{target}"},
+             "update_state": {"phase": "recon"}},
+            {"name": "scan", "tool": "execute", "action": "tool",
+             "args": {"tool": "nmap", "args": "-sV -sC -T4 -p- {target}"},
+             "update_state": {"phase": "scan"}},
+            {"name": "vuln_scan", "tool": "execute", "action": "tool",
+             "args": {"tool": "nuclei", "args": "-host {target} -severity critical,high,medium -silent"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "dir_brute", "tool": "execute", "action": "tool",
+             "args": {"tool": "gobuster", "args": "dir -u {target} -w /usr/share/wordlists/dirb/big.txt"},
+             "update_state": {"phase": "enumerate"}},
+            {"name": "sql_test", "tool": "execute", "action": "tool",
+             "args": {"tool": "sqlmap", "args": "-u {target} --batch --level=2 --risk=1"},
+             "update_state": {"phase": "exploit"}},
+        ]
+    },
+}
+
+
+@mcp.tool()
+def chain(name: str = "web-app", target: str = "", user: str = "", pass_: str = "", 
+          domain: str = "", hash_: str = "", lhost: str = "", lport: int = 4444,
+          max_failures: int = 3, verbose: bool = True) -> str:
+    """Run a pre-defined attack chain against a target.
+    
+    Chains:
+      web-app    full web app assessment (recon → scan → enumerate → exploit)
+      network    network reconnaissance and service exploitation
+      ad-attack  Active Directory enumeration and exploitation
+      box-take   full box takeover (initial access → privesc → root)
+    
+    Args:
+      name: chain name (web-app, network, ad-attack, box-take)
+      target: target host/URL
+      user: username (for AD chains)
+      pass_: password (for AD chains)
+      domain: AD domain
+      hash_: NTLM hash (for AD chains)
+      lhost: listener IP (for reverse shells)
+      lport: listener port
+      max_failures: stop chain after N consecutive failures
+      verbose: print each step as it runs
+    """
+    t0 = time.time()
+    
+    if name not in ATTACK_CHAINS:
+        return f"Unknown chain '{name}'. Available: {', '.join(ATTACK_CHAINS.keys())}"
+    
+    if not target:
+        return "target required"
+    
+    chain_def = ATTACK_CHAINS[name]
+    results = []
+    failures = 0
+    success = 0
+    
+    # Initialize state
+    state_data = {
+        "target": target,
+        "chain": name,
+        "started": datetime.utcnow().isoformat() + "Z",
+        "steps": []
+    }
+    
+    lines = [f"🔗 Starting chain: {chain_def['name']} ({chain_def['description']})"]
+    lines.append(f"🎯 Target: {target}")
+    lines.append(f"⏱️  Started: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+    
+    for step in chain_def["steps"]:
+        step_name = step["name"]
+        step_tool = step["tool"]
+        
+        # Substitute variables in args
+        args = {}
+        for k, v in step.get("args", {}).items():
+            if isinstance(v, str):
+                v = v.replace("{target}", target)
+                v = v.replace("{user}", user)
+                v = v.replace("{pass}", pass_)
+                v = v.replace("{domain}", domain)
+                v = v.replace("{hash}", hash_)
+                v = v.replace("{lhost}", lhost)
+                v = v.replace("{lport}", str(lport))
+            args[k] = v
+        
+        if verbose:
+            lines.append(f"▶️  [{step_name}] {step_tool}...")
+        
+        step_result = {
+            "name": step_name,
+            "tool": step_tool,
+            "args": args,
+            "status": "pending",
+            "output": ""
+        }
+        
+        try:
+            # Execute the step
+            if step_tool == "recon":
+                action = args.pop("action", "")
+                tgt = args.pop("target", target)
+                opts = args.pop("options", "")
+                output = _call_recon(action, tgt, opts)
+            elif step_tool == "execute":
+                tool_name = args.pop("tool", "")
+                tool_args = args.pop("args", "")
+                output = _call_execute(tool_name, tool_args)
+            else:
+                output = f"Unknown tool: {step_tool}"
+            
+            # Truncate output for display
+            output_truncated = output[:2000] if len(output) > 2000 else output
+            
+            step_result["status"] = "success"
+            step_result["output"] = output_truncated
+            success += 1
+            failures = 0
+            
+            if verbose:
+                lines.append(f"   ✅ Success ({len(output)} bytes)")
+                if len(output) > 0:
+                    lines.append(f"   Output preview: {output_truncated[:500]}")
+            
+        except Exception as e:
+            step_result["status"] = "failed"
+            step_result["error"] = str(e)
+            failures += 1
+            
+            if verbose:
+                lines.append(f"   ❌ Failed: {e}")
+        
+        state_data["steps"].append(step_result)
+        
+        # Update phase state
+        if "update_state" in step:
+            _update_state_for_chain(target, step["update_state"], step_result)
+        
+        # Check max failures
+        if failures >= max_failures:
+            lines.append(f"\n⚠️  Stopped after {max_failures} consecutive failures")
+            break
+        
+        if verbose:
+            lines.append("")
+    
+    # Finalize
+    state_data["completed"] = datetime.utcnow().isoformat() + "Z"
+    state_data["summary"] = {
+        "total_steps": len(chain_def["steps"]),
+        "success": success,
+        "failures": failures,
+        "duration_s": time.time() - t0
+    }
+    
+    # Save chain state
+    _save_chain_state(target, name, state_data)
+    
+    lines.append(f"\n📊 Chain Summary:")
+    lines.append(f"   Total steps: {len(chain_def['steps'])}")
+    lines.append(f"   Success: {success}")
+    lines.append(f"   Failures: {failures}")
+    lines.append(f"   Duration: {time.time() - t0:.1f}s")
+    
+    _audit("chain", "completed", target, f"chain={name} success={success} failures={failures}")
+    return "\n".join(lines)
+
+
+def _call_recon(action: str, target: str, options: str = "") -> str:
+    """Call recon tool internally."""
+    if action == "http":
+        return http_probe(target)
+    elif action == "ports":
+        return port_scan(target, options or "1-1024")
+    elif action == "dns_enum":
+        return dns_enum(target)
+    elif action == "subdomains":
+        return subdomain_enum(target)
+    else:
+        return f"Unknown recon action: {action}"
+
+
+def _call_execute(tool: str, args: str) -> str:
+    """Call execute tool internally."""
+    return run_tool(tool, args, target="", purpose="", timeout=300)
+
+
+def _update_state_for_chain(target: str, update: dict, step_result: dict) -> None:
+    """Update state based on chain step results."""
+    try:
+        state_file = STATE_DIR / f"{target.replace('/', '_').replace(':', '_')}.json"
+        state = {}
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+        
+        if "phase" in update:
+            state["phase"] = update["phase"]
+        
+        if "discovered" in update:
+            if "discovered" not in state:
+                state["discovered"] = {}
+            state["discovered"].update(update["discovered"])
+        
+        if step_result.get("status") == "success":
+            if "attempted" not in state:
+                state["attempted"] = []
+            state["attempted"].append({
+                "technique": step_result.get("name", ""),
+                "result": "success",
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            })
+        
+        state["updated"] = datetime.utcnow().isoformat() + "Z"
+        state_file.write_text(json.dumps(state, indent=2))
+    except Exception:
+        pass
+
+
+def _save_chain_state(target: str, chain_name: str, state_data: dict) -> None:
+    """Save chain execution state."""
+    try:
+        chain_dir = STATE_DIR / "chains"
+        chain_dir.mkdir(parents=True, exist_ok=True)
+        chain_file = chain_dir / f"{target.replace('/', '_').replace(':', '_')}_{chain_name}.json"
+        chain_file.write_text(json.dumps(state_data, indent=2))
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: Pivot Tool
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def pivot(action: str = "list", target: str = "", pivot_host: str = "", 
+          pivot_port: int = 22, pivot_user: str = "", pivot_pass: str = "",
+          pivot_key: str = "", tunnel_port: int = 8080, remote_target: str = "") -> str:
+    """Manage pivot tunnels for scanning through compromised hosts.
+    
+    Actions:
+      list       show all active pivots
+      ssh_tunnel create SSH tunnel through a pivot host
+      socks      create SOCKS proxy through pivot
+      scan       scan remote network through pivot
+      close      close a pivot tunnel
+    
+    Args:
+      action: list | ssh_tunnel | socks | scan | close
+      target: local target or pivot host
+      pivot_host: SSH host to pivot through
+      pivot_port: SSH port (default 22)
+      pivot_user: SSH username
+      pivot_pass: SSH password
+      pivot_key: path to SSH key
+      tunnel_port: local port to bind tunnel
+      remote_target: target to scan through pivot
+    """
+    t0 = time.time()
+    a = (action or "list").lower().strip()
+    
+    pivots_file = STATE_DIR / "pivots.json"
+    
+    if a == "list":
+        if not pivots_file.exists():
+            _audit("pivot", "list", "", "no pivots")
+            return "No active pivots."
+        
+        try:
+            pivots = json.loads(pivots_file.read_text())
+        except Exception:
+            return "Error reading pivots."
+        
+        if not pivots:
+            _audit("pivot", "list", "", "no pivots")
+            return "No active pivots."
+        
+        lines = ["🔄 Active Pivots"]
+        for p in pivots:
+            lines.append(f"\n🔗 {p.get('id', 'unknown')}")
+            lines.append(f"   Type: {p.get('type', 'unknown')}")
+            lines.append(f"   Pivot: {p.get('pivot_host', '')}:{p.get('pivot_port', '')}")
+            lines.append(f"   Local: localhost:{p.get('local_port', '')}")
+            lines.append(f"   Remote: {p.get('remote_target', '')}")
+            lines.append(f"   Created: {p.get('created', '')}")
+        
+        _audit("pivot", "list", "", f"total={len(pivots)}")
+        return "\n".join(lines)
+    
+    if a == "ssh_tunnel":
+        if not pivot_host or not pivot_user:
+            return "pivot_host and pivot_user required for ssh_tunnel"
+        
+        # Create SSH tunnel
+        cmd = [
+            "ssh", "-N", "-L", f"{tunnel_port}:localhost:{pivot_port}",
+            f"{pivot_user}@{pivot_host}"
+        ]
+        
+        if pivot_pass:
+            cmd.extend(["-o", "PasswordAuthentication=yes", "-o", f"IdentityFile={pivot_key}"])
+        elif pivot_key:
+            cmd.extend(["-i", pivot_key])
+        
+        # Store pivot info
+        pivot_id = f"ssh_{pivot_host}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        pivot_data = {
+            "id": pivot_id,
+            "type": "ssh_tunnel",
+            "pivot_host": pivot_host,
+            "pivot_port": pivot_port,
+            "pivot_user": pivot_user,
+            "local_port": tunnel_port,
+            "remote_target": remote_target,
+            "created": datetime.utcnow().isoformat() + "Z",
+            "command": " ".join(cmd)
+        }
+        
+        pivots = []
+        if pivots_file.exists():
+            try:
+                pivots = json.loads(pivots_file.read_text())
+            except Exception:
+                pivots = []
+        
+        pivots.append(pivot_data)
+        pivots_file.write_text(json.dumps(pivots, indent=2))
+        
+        _audit("pivot", "ssh_tunnel", pivot_host, f"local_port={tunnel_port}")
+        return (f"🔗 SSH Tunnel Created:\n"
+                f"   ID: {pivot_id}\n"
+                f"   Command: {' '.join(cmd)}\n"
+                f"   Local: localhost:{tunnel_port} → {pivot_host}:{pivot_port}\n"
+                f"   Run the command above to start the tunnel")
+    
+    if a == "socks":
+        if not pivot_host or not pivot_user:
+            return "pivot_host and pivot_user required for socks"
+        
+        # Create SOCKS proxy using ssh -D
+        cmd = [
+            "ssh", "-D", f"localhost:{tunnel_port}",
+            "-q", f"{pivot_user}@{pivot_host}"
+        ]
+        
+        if pivot_key:
+            cmd.extend(["-i", pivot_key])
+        
+        pivot_id = f"socks_{pivot_host}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        pivot_data = {
+            "id": pivot_id,
+            "type": "socks",
+            "pivot_host": pivot_host,
+            "pivot_port": pivot_port,
+            "pivot_user": pivot_user,
+            "local_port": tunnel_port,
+            "remote_target": remote_target,
+            "created": datetime.utcnow().isoformat() + "Z",
+            "command": " ".join(cmd)
+        }
+        
+        pivots = []
+        if pivots_file.exists():
+            try:
+                pivots = json.loads(pivots_file.read_text())
+            except Exception:
+                pivots = []
+        
+        pivots.append(pivot_data)
+        pivots_file.write_text(json.dumps(pivots, indent=2))
+        
+        _audit("pivot", "socks", pivot_host, f"local_port={tunnel_port}")
+        return (f"🔗 SOCKS Proxy Created:\n"
+                f"   ID: {pivot_id}\n"
+                f"   Command: {' '.join(cmd)}\n"
+                f"   Local: socks5://localhost:{tunnel_port}\n"
+                f"   Use with proxychains or set HTTP_PROXY/HTTPS_PROXY")
+    
+    if a == "scan":
+        if not remote_target:
+            return "remote_target required for scan"
+        
+        # Scan through pivot using proxychains
+        cmd = [
+            "proxychains", "nmap", "-sV", "-T4",
+            remote_target
+        ]
+        
+        code, output = _run(cmd, timeout=300)
+        
+        _audit("pivot", "scan", remote_target, f"exit={code}")
+        return f"$ {' '.join(cmd)}\n\n{output}"
+    
+    if a == "close":
+        if not target:
+            return "target (pivot ID) required for close"
+        
+        pivots = []
+        if pivots_file.exists():
+            try:
+                pivots = json.loads(pivots_file.read_text())
+            except Exception:
+                pivots = []
+        
+        original_len = len(pivots)
+        pivots = [p for p in pivots if p.get("id") != target]
+        
+        if len(pivots) < original_len:
+            pivots_file.write_text(json.dumps(pivots, indent=2))
+            _audit("pivot", "close", target, "closed")
+            return f"✅ Closed pivot: {target}"
+        else:
+            _audit("pivot", "close", target, "not found", ok=False)
+            return f"❌ Pivot not found: {target}"
+    
+    return f"unknown action '{action}' — use list, ssh_tunnel, socks, scan, or close"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: Adaptive Reasoning Helper
+# --------------------------------------------------------------------------- #
+@mcp.tool()
+def adapt(technique: str = "", result: str = "success", reason: str = "", 
+          target: str = "", recommendation: str = "") -> str:
+    """Record adaptive learning from attack results.
+    
+    Args:
+      technique: technique/exploit that was tried
+      result: success | failed | partial
+      reason: why it succeeded/failed (WAF, rate limit, version mismatch, etc.)
+      target: target for context
+      recommendation: what to try next based on this result
+    """
+    t0 = time.time()
+    
+    learn_file = STATE_DIR / "learning.json"
+    learning = []
+    
+    if learn_file.exists():
+        try:
+            learning = json.loads(learn_file.read_text())
+        except Exception:
+            learning = []
+    
+    learning.append({
+        "technique": technique,
+        "result": result,
+        "reason": reason,
+        "target": target,
+        "recommendation": recommendation,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    })
+    
+    learn_file.write_text(json.dumps(learning, indent=2))
+    
+    _audit("adapt", "recorded", target, f"technique={technique} result={result}")
+    
+    # Generate recommendation if not provided
+    if not recommendation:
+        recommendations = {
+            ("WAF", "failed"): "Try encoded payloads (base64, hex, URL encoding)",
+            ("rate_limit", "failed"): "Slow down requests or use different source IP",
+            ("version_mismatch", "failed"): "Search for alternative exploits for same CVE",
+            ("auth_required", "failed"): "Try credential brute force or find auth bypass",
+            ("timeout", "failed"): "Try simpler/smaller payload or increase timeout",
+        }
+        
+        key = (reason.lower(), result.lower())
+        if key in recommendations:
+            recommendation = recommendations[key]
+            learning[-1]["recommendation"] = recommendation
+            learn_file.write_text(json.dumps(learning, indent=2))
+    
+    return f"🧠 Adaptive learning recorded:\n" \
+           f"   Technique: {technique}\n" \
+           f"   Result: {result}\n" \
+           f"   Reason: {reason}\n" \
+           f"   Recommendation: {recommendation or 'Continue with next technique'}"
+
+
 if __name__ == "__main__":
     _audit("server", "start", detail=str(INDEX))
     mcp.run()
