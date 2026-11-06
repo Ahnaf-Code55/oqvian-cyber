@@ -153,24 +153,27 @@ OQVIAN V2.0: Autonomous Hacker
 
 ## Capabilities Matrix
 
-| Capability | Phase 0 | Phase 1 | Phase 2 | Phase 3 |
-|------------|---------|---------|---------|---------|
-| **Knowledge Search** | ✅ | ✅ | ✅ | ✅ |
-| **Live Recon** | ✅ | ✅ | ✅ | ✅ |
-| **Tool Execution** | ✅ | ✅ | ✅ | ✅ |
-| **State Tracking** | ❌ | ✅ | ✅ | ✅ |
-| **Loot Collection** | ❌ | ✅ | ✅ | ✅ |
-| **Exploit Search** | ❌ | ✅ | ✅ | ✅ |
-| **Attack Chaining** | ❌ | ❌ | ✅ | ✅ |
-| **Lateral Movement** | ❌ | ❌ | ✅ | ✅ |
-| **Adaptive Learning** | ❌ | ❌ | ✅ | ✅ |
-| **Payload Generation** | ❌ | ❌ | ✅ | ✅ |
-| **Credential Testing** | ❌ | ❌ | ✅ | ✅ |
-| **Backtracking** | ❌ | ❌ | ✅ | ✅ |
-| **Success Rates** | ❌ | ❌ | ❌ | ✅ |
-| **Hacker Intuition** | ❌ | ❌ | ❌ | ✅ |
-| **Auto-Update Corpus** | ❌ | ❌ | ❌ | ✅ |
-| **Cross-Session Learning** | ❌ | ❌ | ❌ | ✅ |
+| Capability | Phase 0 | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
+|------------|---------|---------|---------|---------|---------|
+| **Knowledge Search** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Live Recon** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tool Execution** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **State Tracking** | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Loot Collection** | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Exploit Search** | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Attack Chaining** | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Lateral Movement** | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Adaptive Learning** | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Payload Generation** | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Credential Testing** | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Backtracking** | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Success Rates** | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **Hacker Intuition** | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **Auto-Update Corpus** | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **Cross-Session Learning** | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **Attack Planning** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **One-Command Attack** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Continuous Loop** | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ---
 
@@ -229,17 +232,27 @@ After:  "CVE-2021-41773 works 85% on Apache 2.4.49 → try first"
 
 ---
 
-## Next: Phase 4 (Power Mode)
+## Phase 4: Autonomy Engine ✅
 
-**Goal**: 32B model, fine-tuning, full autonomy
+**Goal**: Full autonomy on 16GB RAM + 4GB VRAM (no 32B model needed!)
 
-**Planned Features**:
-1. **32B model option** — For complex reasoning and exploit development
-2. **Fine-tuning** — Train on hacking corpus (CTF writeups, exploit DB)
-3. **Multi-model ensemble** — Small model for recon, large for exploits
-4. **Full autonomous mode** — `hack www.target.com` → get root
+**Tools Added** (3):
+1. `plan_attack` — Generate attack plans from discoveries
+2. `autonomous_hack` — One-command autonomous attack
+3. `autonomous_loop` — Continuous attack until goal achieved
 
-**Estimated Timeline**: Week 4
+**Files**:
+- `mcp/server.py` +560 lines
+- `docs/PHASE-4-PLAN.md`
+- `docs/PHASE-4-COMPLETE.md`
+
+**Commit**: `ce632b3` — feat: Phase 4 - autonomy engine
+
+**Key Insight**: Instead of 32B model, we built smart autonomy engine that:
+- Keeps 7B model (fits in 16GB RAM, runs on 4GB VRAM)
+- Uses Phase 3 learning (intuition, success rates)
+- Runs attack loops until goal achieved
+- Plans, executes, learns autonomously
 
 ---
 
@@ -284,14 +297,16 @@ oqvian-cyber/
 
 ## Status
 
-✅ **Phases 1-3 COMPLETE**
+✅ **All Phases COMPLETE (1-4)**
 
 - [x] Phase 1: Core Enhancements (state, loot, searchsploit)
 - [x] Phase 2: Autonomous Loops (chain, pivot, adapt, payload, creds, backtrack)
 - [x] Phase 3: Learning System (learn, intuition, update_corpus, aggregate)
-- [ ] Phase 4: Power Mode (32B model, fine-tuning, full autonomy)
+- [x] Phase 4: Autonomy Engine (plan_attack, autonomous_hack, autonomous_loop)
 
-**Ready for Phase 4!**
+**OQVIAN is now a fully autonomous hacker!**
+
+**Total MCP Tools**: 17 (5 original + 12 new across 4 phases)
 
 ---
 
