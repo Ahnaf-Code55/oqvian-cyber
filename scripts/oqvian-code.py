@@ -9,6 +9,8 @@ uses, so behaviour is identical between terminal and web.
     oqvian-code -p "hack localhost"   # one-shot, print result, exit
     oqvian-code --model oqvian        # start on a specific model
     oqvian-code --permission-mode ask # ask before tool calls
+    oqvian-code --effort fast         # FAST mode: low reasoning, brief answers
+    oqvian-code --effort ultra        # ULTRA: max speed, minimal output
 
 Interactive UX (Claude Code-like):
   ❯ prompt with box-drawing banner, model + permission footer
@@ -17,6 +19,7 @@ Interactive UX (Claude Code-like):
   🧠 thinking stream (reasoning deltas) in dim italic
   slash commands: /help /clear /compact /init /review /resume /export
                   /cost /models /model /status /cancel /quit
+                  /fast /ultra /effort            ← speed knobs
   Ctrl+C cancels the running turn, Ctrl+D / /quit exits
 
 Permissions: default is danger-full-access (auto-approve) with the
@@ -24,6 +27,14 @@ authorisation boundary enforced *inside* the tool server via
 ~/.config/oqvian/scope.json plus the audit log (~/.local/share/oqvian/
 audit.jsonl). `--permission-mode ask` keeps the harness prompt for
 approvals instead.
+
+FAST / ULTRA (effort knob):
+  off    full reasoning, normal answers (default — best quality)
+  fast   low reasoning effort, ≤150-word brief answers, trimmed tool display
+  ultra  reasoning off, ≤60-word bullet-only answers, minimal display
+  FAST cuts warm-up + per-turn CPU on your 4-core box dramatically;
+  it trades some depth for speed. Same model, same harness, same tools.
+  The knob is: /fast, /ultra, /effort off|fast|ultra  (or --effort at launch).
 """
 from __future__ import annotations
 
@@ -77,6 +88,12 @@ def cyan(s: str) -> str: return f"{CYAN}{s}{RESET}"
 def magenta(s: str) -> str: return f"{MAGENTA}{s}{RESET}"
 
 SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+EFFORT_PREAMBLE = {
+    "off": "",
+    "fast": "[FAST MODE: use low reasoning effort. Keep every answer to 150 words or fewer, minimal prose, call tools immediately without long analysis.]\n",
+    "ultra": "[ULTRA MODE: use minimal reasoning effort. Keep every answer to 60 words or fewer, bullet points only, no analysis paragraphs, call tools immediately.] ",
+}
 
 class CliError(RuntimeError):
     pass
@@ -201,9 +218,12 @@ def fetch_models(port: int, session_id: str) -> tuple[str, str, list, list]:
     return provider, model, value.get("groups", []), value.get("failures", [])
 
 
-def set_model(port: int, session_id: str, provider: str, model: str) -> None:
-    http_json(port, "session.selectModel",
-              {"sessionId": session_id, "provider": provider, "model": model}, timeout=20.0)
+def set_model(port: int, session_id: str, provider: str, model: str,
+              reasoning_effort: str | None = None) -> None:
+    payload: dict = {"sessionId": session_id, "provider": provider, "model": model}
+    if reasoning_effort:
+        payload["reasoningEffort"] = reasoning_effort
+    http_json(port, "session.selectModel", payload, timeout=20.0)
 
 
 def tool_summary(payload: object) -> tuple[str, str]:
@@ -248,7 +268,7 @@ class TurnStats:
 
 async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         perm_mode: str = "auto", verbose: bool = False,
-                        on_ask=None):
+                        on_ask=None, effort: str = "off"):
     """Consume the events.mux stream for one turn. Returns (ok, text, stats)."""
     uri = f"ws://127.0.0.1:{port}/api/events.mux"
     text_parts: list[str] = []
@@ -312,11 +332,20 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                 if ckind == "thinking":
                     thinking_parts.append(delta)
                     if not quiet:
-                        if not thinking_started:
-                            sys.stdout.write(f"\r\033[K\n{DIM}{ITALIC}🧠 thinking…{RESET}\n")
-                            thinking_started = True
-                        sys.stdout.write(f"{DIM}{ITALIC}{delta}{RESET}")
-                        sys.stdout.flush()
+                        # FAST collapses thinking to one dim line; ULTRA hides it.
+                        if effort == "ultra":
+                            pass
+                        elif effort == "fast":
+                            if not thinking_started:
+                                sys.stdout.write(f"\r\033[K{DIM}{ITALIC}🧠 thinking (fast)…{RESET}\n")
+                                thinking_started = True
+                            sys.stdout.flush()
+                        else:
+                            if not thinking_started:
+                                sys.stdout.write(f"\r\033[K\n{DIM}{ITALIC}🧠 thinking…{RESET}\n")
+                                thinking_started = True
+                            sys.stdout.write(f"{DIM}{ITALIC}{delta}{RESET}")
+                            sys.stdout.flush()
                 else:
                     if not quiet:
                         if not assistant_started:
@@ -329,7 +358,8 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                 stats.tool_calls += 1
                 if not quiet:
                     name, args = tool_summary(data)
-                    sys.stdout.write(f"\r\033[K\n{DIM}⏺ {name} {args[:100]}{RESET}\n")
+                    trunc = {"off": 100, "fast": 60, "ultra": 40}.get(effort, 100)
+                    sys.stdout.write(f"\r\033[K\n{DIM}⏺ {name} {args[:trunc]}{RESET}\n")
                     sys.stdout.flush()
                 if perm_mode == "ask" and on_ask is not None:
                     # NOTE: the harness in --permission-mode ask would normally
@@ -386,7 +416,8 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
 
 
 def print_banner(cwd: Path, session_id: str, provider: str, model: str,
-                 perm: str, host_desc: dict | None = None) -> None:
+                 perm: str, host_desc: dict | None = None, effort: str = "off") -> None:
+    badge = {"off": "", "fast": "  ⚡ FAST", "ultra": "  🔥 ULTRA"}.get(effort, "")
     print()
     print(bold("  ╔════════════════════════════════════════════════════════╗"))
     print(bold("  ║  OQVIAN CODE — OQVIAN CYBER 1.2 AGGRESSIVE          ║"))
@@ -396,6 +427,8 @@ def print_banner(cwd: Path, session_id: str, provider: str, model: str,
     print(dim(f"  session    {session_id}"))
     print(dim(f"  cwd        {cwd}"))
     print(dim(f"  permission {perm}  (/permission to change)"))
+    if effort != "off":
+        print(dim(f"  effort     {effort}{badge}  (/effort to change)"))
     print(dim(f"  scope      ~/.config/oqvian/scope.json"))
     print()
     print("  Type a task, or /help for commands. Ctrl+C cancels, Ctrl+D exits.")
@@ -415,6 +448,9 @@ def print_help() -> None:
   /models               list models (interactive picker)
   /model <id>           switch model (e.g. /model oqvian:latest)
   /permission [mode]    show / change permission mode (auto|ask|plan)
+  /fast                 toggle FAST mode (low effort, brief answers)
+  /ultra                toggle ULTRA mode (min effort, bullet-only answers)
+  /effort [off|fast]    show or set effort level
   /status               host, session, service status
   /cancel               cancel the running turn
   /quit                 exit (also: /exit, /q, Ctrl-D, Ctrl-C)
@@ -424,18 +460,25 @@ Permission modes:
   ask   ask before tool calls (harness prompts server-side)
   plan  plan mode — model proposes, you approve before execution
 
+Effort (FAST knob):
+  off   full reasoning, normal answers (default)
+  fast  low reasoning effort, ≤150-word brief answers, trimmed display
+  ultra reasoning off, ≤60-word bullet-only answers, minimal display
+
 Tips:
   · Multi-line: end a line with \\ to continue on the next line
   · Shift+Tab toggles plan mode in Claude Code; here use /permission plan
   · Headless:  oqvian-code -p "your task"   (like: claude -p "...")
+  · Speed:     oqvian-code --effort fast     (same knob, at launch)
 """)
 
 
 class Session:
-    def __init__(self, port: int, session_id: str, perm_mode: str):
+    def __init__(self, port: int, session_id: str, perm_mode: str, effort: str = "off"):
         self.port = port
         self.session_id = session_id
         self.perm_mode = perm_mode  # auto | ask | plan
+        self.effort = effort  # off | fast | ultra
         self.transcript: list[str] = []
         self.stats = TurnStats()
         self.total_tools = 0
@@ -447,10 +490,12 @@ class Session:
 
     def prompt(self, text: str, *, quiet: bool = False) -> tuple[bool, str]:
         self.log("user", text)
+        preamble = EFFORT_PREAMBLE.get(self.effort, "")
+        full_text = (preamble + text) if preamble else text
         body = {"type": "client-request", "rpcId": str(uuid.uuid4()),
                 "method": "session.prompt",
                 "payload": {"sessionId": self.session_id, "mode": "queue",
-                            "content": [{"type": "text", "text": text}]}}
+                            "content": [{"type": "text", "text": full_text}]}}
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/api/session.prompt",
             data=json.dumps(body).encode(),
@@ -461,7 +506,8 @@ class Session:
         if not envelope.get("result", {}).get("ok"):
             raise CliError(f"session.prompt rejected: {raw[:500]}")
         ok_, text = asyncio.run(wait_for_turn(self.port, self.session_id,
-                                              quiet=quiet, perm_mode=self.perm_mode))
+                                              quiet=quiet, perm_mode=self.perm_mode,
+                                              effort=self.effort))
         self.total_turns += 1
         self.total_tools += 1  # per-turn tool count folded into stats below
         self.log("assistant", text)
@@ -479,6 +525,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--permission-mode", default="auto",
                    choices=["auto", "ask", "plan"],
                    help="permission mode (default: auto)")
+    p.add_argument("--effort", default=None,
+                   choices=["off", "fast", "ultra"],
+                   help="effort knob: off=full reasoning, fast=low effort + brief, ultra=min effort")
+    p.add_argument("--fast", action="store_true", help="shortcut for --effort fast")
+    p.add_argument("--ultra", action="store_true", help="shortcut for --effort ultra")
     p.add_argument("--resume", default=None,
                    help="resume session id (or 'latest' to pick the most recent)")
     p.add_argument("--cwd", default=os.getcwd())
@@ -502,6 +553,13 @@ def main(argv: list[str] | None = None) -> int:
     if not cwd.is_dir():
         print(err(f"workspace is not a directory: {cwd}"), file=sys.stderr)
         return 2
+
+    effort = args.effort
+    if args.ultra:
+        effort = "ultra"
+    elif args.fast:
+        effort = "fast"
+    effort = effort or "off"
 
     dsh = shutil.which("dsh")
     if not dsh:
@@ -569,7 +627,20 @@ def main(argv: list[str] | None = None) -> int:
                 set_model(port, session_id, provider, want_provider)
             provider, model, groups, failures = fetch_models(port, session_id)
 
-        sess = Session(port, session_id, args.permission_mode)
+        # FAST knob → harness-level reasoning effort (best-effort: older
+        # providers ignore unknown effort values, prompt preamble still applies)
+        if effort == "fast":
+            try:
+                set_model(port, session_id, provider, model, reasoning_effort="low")
+            except CliError:
+                pass
+        elif effort == "ultra":
+            try:
+                set_model(port, session_id, provider, model, reasoning_effort="off")
+            except CliError:
+                pass
+
+        sess = Session(port, session_id, args.permission_mode, effort)
 
         # ── One-shot (-p) ──────────────────────────────────────────────── #
         if args.prompt:
@@ -579,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # ── Interactive ────────────────────────────────────────────────── #
         print_banner(cwd, session_id, provider, model,
-                     args.permission_mode, host_desc)
+                     args.permission_mode, host_desc, effort)
 
         buffer = ""
         while True:
@@ -615,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
                     print_help()
                 elif cmd == "/clear":
                     os.system("clear" if os.name != "nt" else "cls")
-                    print_banner(cwd, session_id, provider, model, args.permission_mode)
+                    print_banner(cwd, session_id, provider, model, args.permission_mode, effort=effort)
                 elif cmd == "/compact":
                     print(dim("compacting context — summarising then refreshing session…"))
                     try:
@@ -624,7 +695,7 @@ def main(argv: list[str] | None = None) -> int:
                             "next steps) as a compact handoff note I can paste into a "
                             "fresh session.", quiet=True)
                         session_id = create_session(port, cwd)
-                        sess = Session(port, session_id, args.permission_mode)
+                        sess = Session(port, session_id, args.permission_mode, effort)
                         sess.log("context", summary)
                         print(ok(f"compacted → new session {session_id}"))
                         print(dim(f"handoff note: {summary[:400]}…"))
@@ -742,7 +813,7 @@ def main(argv: list[str] | None = None) -> int:
                     try:
                         print(f"cwd: {cwd}\nport: {port}\nsession: {session_id}"
                               f"\nmodel: {provider}/{model}\npermission: {args.permission_mode}"
-                              f"\nhost: {host_desc}")
+                              f"\neffort: {effort}\nhost: {host_desc}")
                     except Exception as exc:
                         print(err(str(exc)))
                 elif cmd == "/cancel":
@@ -751,6 +822,38 @@ def main(argv: list[str] | None = None) -> int:
                         print(dim("cancel requested"))
                     except CliError as exc:
                         print(err(str(exc)))
+                elif cmd in ("/fast", "/ultra", "/effort"):
+                    new_effort: str
+                    if cmd == "/fast":
+                        new_effort = "off" if effort == "fast" else "fast"
+                    elif cmd == "/ultra":
+                        new_effort = "off" if effort == "ultra" else "ultra"
+                    elif not rest:
+                        print(f"effort: {bold(effort)}  (off|fast|ultra)")
+                        continue
+                    else:
+                        new_effort = rest.lower()
+                    if new_effort not in ("off", "fast", "ultra"):
+                        print(err("usage: /effort [off|fast|ultra]"))
+                        continue
+                    effort = new_effort
+                    sess.effort = effort
+                    # apply harness-level reasoning effort (best-effort)
+                    if effort == "fast":
+                        try:
+                            set_model(port, session_id, provider, model, reasoning_effort="low")
+                        except CliError:
+                            pass
+                    elif effort == "ultra":
+                        try:
+                            set_model(port, session_id, provider, model, reasoning_effort="off")
+                        except CliError:
+                            pass
+                    if effort == "off":
+                        print(ok(f"effort → off (full reasoning)"))
+                    else:
+                        badge = "⚡" if effort == "fast" else "🔥"
+                        print(ok(f"effort → {effort} {badge} (brief, low reasoning)"))
                 elif cmd in ("/resume", "/memory"):
                     print(dim("recent sessions:"))
                     try:
