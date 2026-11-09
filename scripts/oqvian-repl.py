@@ -287,7 +287,10 @@ async def wait_for_turn(port: int, session_id: str, quiet: bool, verbose: bool) 
 
 def print_banner(descriptor: dict, cwd: Path, session_id: str, verbose: bool) -> None:
     print()
-    print(bold("  OQVIAN REPL"))
+    print(bold("  ╔══════════════════════════════════════════╗"))
+    print(bold("  ║   OQVIAN CYBER V1.2 AGGRESSIVE          ║"))
+    print(bold("  ║   Autonomous Offensive Cyber Warfare    ║"))
+    print(bold("  ╚══════════════════════════════════════════╝"))
     print(dim(f"  cwd      {cwd}"))
     print(dim(f"  host     127.0.0.1 (loopback only) · danger bypass enabled"))
     print(dim(f"  session  {session_id}"))

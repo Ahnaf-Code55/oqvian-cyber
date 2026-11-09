@@ -1,6 +1,9 @@
 # OQVIAN V1.2 AGGRESSIVE — Python Dependencies
 # Autonomous Penetration Testing Engine
 
+# Core
+numpy>=1.24.0
+
 # MCP Framework
 mcp>=1.0.0
 
