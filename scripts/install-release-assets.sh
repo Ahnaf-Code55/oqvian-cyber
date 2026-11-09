@@ -34,7 +34,7 @@ case "$REPO" in
   */*) : ;;
   *)   REPO="Ahnaf-Code55/oqvian-cyber" ;;
 esac
-TAG="v1.1.0"
+TAG="v1.2.0"
 DO_MODELS=1
 DO_HARNESS=1
 FROM_DIR=""
