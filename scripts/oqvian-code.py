@@ -456,6 +456,8 @@ class TurnStats:
         self.tokens_out = 0
         self.thinking = 0
         self.tool_result_chars = 0
+        self.last_result = ""
+        self.tool_names: list[str] = []
         self._last_title = 0.0
         self._thinking_dur_printed = False
         self._explore_header = False
@@ -492,8 +494,16 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
             return
         last_spinner = now
         elapsed = int(now - stats.start)
-        # overwrite current line with spinner (Claude Code style)
-        sys.stdout.write(f"\r\033[K{DIM}{SPINNER[spinner_idx % len(SPINNER)]} Working… ({elapsed}s)"
+        # Phase-aware label: prompt eval → running a tool → generating.
+        if tool_starts:
+            tool_age = int(now - tool_starts[-1])
+            tool_name = stats.tool_names[-1] if stats.tool_names else "tool"
+            phase = f"running {tool_name} ({tool_age}s)"
+        elif stats.tokens_out > 0:
+            phase = "generating"
+        else:
+            phase = "prompt eval"
+        sys.stdout.write(f"\r\033[K{DIM}{SPINNER[spinner_idx % len(SPINNER)]} {phase}… ({elapsed}s)"
                          f" · {stats.tool_calls} tool calls"
                          f" · ~{input_tokens_est} in · ~{stats.tokens_out} out{RESET}")
         sys.stdout.flush()
@@ -595,6 +605,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                 # Compact exploration display (Claude Code style) for read/search tools.
                 name, args = tool_summary(data)
                 short = name
+                stats.tool_names.append(short)
                 is_explore = False
                 detail = ""
                 low = short.lower()
@@ -665,6 +676,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                             result_text = max(strs, key=lambda kv: len(kv[1]))[1]
                     if result_text:
                         stats.tool_result_chars += len(result_text)
+                        stats.last_result = result_text
                         cap = 6000
                         if len(result_text) > cap:
                             shown = (result_text[:cap]
@@ -768,6 +780,7 @@ def print_help() -> None:
   /resume               list previous sessions to resume
   /export [file]        export transcript (default: oqvian-transcript.md)
   /render               re-render the last answer with markdown formatting
+  /expand               print the full output of the last tool call
   /title [items]        configure terminal title (tokens,context,model,turns; or 'off')
   /autocompact [pct]    auto-compact when context exceeds pct% (0=off, default 80)
   /cost                 show this session's usage (tool calls, tokens est.)
@@ -817,6 +830,7 @@ class Session:
         self.total_turns = 0
         self.context_chars = 0
         self.last_answer = ""
+        self.last_tool_result = ""
         # Codex-style configurable terminal title + auto-compaction.
         self.title_items = ["tokens"]  # subset of: tokens, context, model, turns, cwd
         self.autocompact = 0.0  # 0 = off; else fraction of context window (e.g. 0.8)
@@ -867,7 +881,13 @@ class Session:
         self.total_tokens += turn_stats.tokens_out
         self.context_chars += len(full_text) + len(text) + turn_stats.tool_result_chars
         self.last_answer = text
+        self.last_tool_result = turn_stats.last_result
         self.log("assistant", text)
+        if not quiet:
+            used = self.context_chars // 4
+            pct = (used / self.context_window * 100) if self.context_window else 0.0
+            print(dim(f"  ↳ ctx {pct:.0f}% · t{self.total_turns + 1} · "
+                      f"{self.perm_mode} · ~{self.total_tokens} tok out total"))
         # Codex-style auto-compaction when context usage crosses the threshold.
         if (self.autocompact > 0 and self.context_window
                 and self.context_chars // 4 > self.autocompact * self.context_window):
@@ -927,6 +947,8 @@ def map_perm(mode: str) -> str:
     return {"auto": "danger-full-access", "ask": "ask", "plan": "plan"}[mode]
 
 
+_HISTORY: list[str] = []
+
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show this help"),
     ("/clear", "clear the screen (new session)"),
@@ -936,6 +958,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/resume", "list previous sessions to resume"),
     ("/export", "export transcript (default: oqvian-transcript.md)"),
     ("/render", "re-render the last answer with markdown formatting"),
+    ("/expand", "print the full output of the last tool call"),
     ("/cost", "show this session's usage (tool calls, tokens est.)"),
     ("/models", "list models (interactive picker)"),
     ("/model", "switch model (e.g. /model oqvian:latest)"),
@@ -961,11 +984,17 @@ def read_interactive_line(prompt_str: str = "❯ ") -> str:
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     buf: list[str] = []
+    hist_idx = len(_HISTORY)
     try:
         tty.setcbreak(fd)
         sys.stdout.write(prompt_str)
         sys.stdout.flush()
         slash_shown = False
+
+        def redraw():
+            sys.stdout.write("\r\033[K" + prompt_str + "".join(buf))
+            sys.stdout.flush()
+
         while True:
             ch = sys.stdin.read(1)
             if ch == "\n" or ch == "\r":
@@ -977,6 +1006,36 @@ def read_interactive_line(prompt_str: str = "❯ ") -> str:
             if ch == "\x04":  # Ctrl-D
                 if not buf:
                     raise EOFError
+                continue
+            # Bracketed paste: ESC[200~ … ESC[201~ — insert without submitting.
+            if ch == "\x1b":  # Escape sequence
+                seq = sys.stdin.read(2)
+                if seq == "[2":
+                    rest = sys.stdin.read(1)
+                    if rest == "0" and sys.stdin.read(1) == "0" and sys.stdin.read(1) == "~":
+                        while True:
+                            c2 = sys.stdin.read(1)
+                            if c2 == "\x1b":
+                                if sys.stdin.read(4) == "[201" and sys.stdin.read(1) == "~":
+                                    break
+                                buf.append("\x1b")
+                                continue
+                            buf.append(c2)
+                            sys.stdout.write(c2)
+                        sys.stdout.flush()
+                        continue
+                # Up/Down arrow: recall history
+                if seq == "[A" and _HISTORY:
+                    hist_idx = max(0, hist_idx - 1)
+                    buf[:] = list(_HISTORY[hist_idx])
+                    redraw()
+                    continue
+                if seq == "[B" and _HISTORY:
+                    if hist_idx < len(_HISTORY):
+                        hist_idx = min(len(_HISTORY), hist_idx + 1)
+                        buf[:] = list(_HISTORY[hist_idx]) if hist_idx < len(_HISTORY) else []
+                        redraw()
+                    continue
                 continue
             if ch == "\x7f" or ch == "\b":  # backspace
                 if buf:
@@ -1154,7 +1213,17 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 line = read_interactive_line(f"{bold('❯')} ").rstrip("\n")
             except EOFError:
-                print("\nBye.")
+                print("\n")
+                used = sess.context_chars // 4
+                pct = (used / sess.context_window * 100) if sess.context_window else 0.0
+                print(bold("  ── session summary ──────────────────────"))
+                print(dim(f"  turns       {sess.total_turns}"))
+                print(dim(f"  tool calls  {sess.total_tools}"))
+                print(dim(f"  tokens out  ~{sess.total_tokens}"))
+                print(dim(f"  context     ~{used} / {sess.context_window} ({pct:.0f}%)"))
+                print(dim(f"  audit log   ~/.local/share/oqvian/audit.jsonl"))
+                print(dim(f"  transcript  {len(sess.transcript)} messages"))
+                print("")
                 break
             except KeyboardInterrupt:
                 print("\nUse /quit to exit")
@@ -1171,6 +1240,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             if not line:
                 continue
+            _HISTORY.append(line)
+            if len(_HISTORY) > 200:
+                _HISTORY.pop(0)
 
             if line.startswith("/"):
                 parts = line.split(None, 1)
@@ -1178,6 +1250,15 @@ def main(argv: list[str] | None = None) -> int:
                 rest = parts[1].strip() if len(parts) > 1 else ""
 
                 if cmd in ("/quit", "/exit", "/q"):
+                    used = sess.context_chars // 4
+                    pct = (used / sess.context_window * 100) if sess.context_window else 0.0
+                    print(bold("  ── session summary ──────────────────────"))
+                    print(dim(f"  turns       {sess.total_turns}"))
+                    print(dim(f"  tool calls  {sess.total_tools}"))
+                    print(dim(f"  tokens out  ~{sess.total_tokens}"))
+                    print(dim(f"  context     ~{used} / {sess.context_window} ({pct:.0f}%)"))
+                    print(dim(f"  audit log   ~/.local/share/oqvian/audit.jsonl"))
+                    print("")
                     break
                 elif cmd == "/help":
                     print_help()
@@ -1236,6 +1317,14 @@ def main(argv: list[str] | None = None) -> int:
                         console.print(_RichMarkdown(sess.last_answer))
                     else:
                         print(sess.last_answer)
+                elif cmd == "/expand":
+                    out = sess.last_tool_result
+                    if not out:
+                        print(dim("  no tool result yet"))
+                    else:
+                        print(dim("── last tool result ───────────────────────"))
+                        print(out)
+                        print(dim("───────────────────────────────────────────"))
                 elif cmd == "/title":
                     if not rest:
                         print(f"title items: {', '.join(sess.title_items) or '(none)'}")
