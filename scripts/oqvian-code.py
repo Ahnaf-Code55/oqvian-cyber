@@ -66,6 +66,8 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import deque
+from difflib import unified_diff
 from datetime import datetime
 from pathlib import Path
 
@@ -449,6 +451,59 @@ def chunk_text(chunk: object) -> tuple[str, str]:
     return "", ""
 
 
+def _file_snapshot(args_text: str):
+    """If this tool call is an edit/write to a file, return (path, old_content)."""
+    try:
+        a = json.loads(args_text)
+    except Exception:
+        return None
+    if not isinstance(a, dict):
+        return None
+    path = None
+    for k in ("file_path", "path", "file", "filename"):
+        v = a.get(k)
+        if isinstance(v, str) and v:
+            path = v
+            break
+    if not path:
+        return None
+    try:
+        p = Path(path).expanduser()
+        if not p.is_file():
+            return None
+        return p, p.read_text(errors="replace")[:200_000]
+    except Exception:
+        return None
+
+
+def print_file_diff(path: Path, old: str) -> None:
+    try:
+        new = path.read_text(errors="replace")
+    except Exception:
+        return
+    if old == new:
+        return
+    diff = list(unified_diff(old.splitlines(), new.splitlines(),
+                             fromfile=f"a/{path.name}", tofile=f"b/{path.name}",
+                             lineterm=""))
+    if not diff:
+        return
+    cap = 120
+    for i, line in enumerate(diff):
+        if i >= cap:
+            sys.stdout.write(f"{DIM}  ⋯ {len(diff) - cap} more diff lines{RESET}\n")
+            break
+        if line.startswith("+") and not line.startswith("+++"):
+            sys.stdout.write(f"{GREEN}  │ {line}{RESET}\n")
+        elif line.startswith("-") and not line.startswith("---"):
+            sys.stdout.write(f"{RED}  │ {line}{RESET}\n")
+        elif line.startswith("@@"):
+            sys.stdout.write(f"{CYAN}  {line}{RESET}\n")
+        else:
+            sys.stdout.write(f"{DIM}  │ {line}{RESET}\n")
+    sys.stdout.flush()
+
+
 class TurnStats:
     def __init__(self) -> None:
         self.start = time.monotonic()
@@ -483,6 +538,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
     thinking_started = False
     thinking_start: list[float] = []
     tool_starts: list[float] = []
+    pending_edits: deque = deque()  # (path, old_content) for diff preview
     spinner_idx = 0
     last_spinner = 0.0
     deadline = time.monotonic() + 4500
@@ -606,6 +662,10 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                 name, args = tool_summary(data)
                 short = name
                 stats.tool_names.append(short)
+                if short.lower() in ("edit", "write", "str-replace-editor", "str_replace_editor"):
+                    snap = _file_snapshot(args)
+                    if snap is not None:
+                        pending_edits.append(snap)
                 is_explore = False
                 detail = ""
                 low = short.lower()
@@ -694,6 +754,12 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                     color = DIM if status else err
                     sys.stdout.write(f"{color}  {glyph} {label} ({dur:.1f}s){RESET}\n")
                     sys.stdout.flush()
+                    if pending_edits:
+                        try:
+                            epath, eold = pending_edits.popleft()
+                            print_file_diff(epath, eold)
+                        except IndexError:
+                            pass
             elif kind == "llm/retry":
                 if not quiet:
                     retry = data.get("retry", "?")
@@ -781,6 +847,8 @@ def print_help() -> None:
   /export [file]        export transcript (default: oqvian-transcript.md)
   /render               re-render the last answer with markdown formatting
   /expand               print the full output of the last tool call
+  /copy                 copy the last answer to the clipboard
+  /find <term>          search this session's transcript
   /title [items]        configure terminal title (tokens,context,model,turns; or 'off')
   /autocompact [pct]    auto-compact when context exceeds pct% (0=off, default 80)
   /cost                 show this session's usage (tool calls, tokens est.)
@@ -948,6 +1016,7 @@ def map_perm(mode: str) -> str:
 
 
 _HISTORY: list[str] = []
+_MODEL_CHOICES: list[str] = []
 
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "show this help"),
@@ -959,6 +1028,8 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/export", "export transcript (default: oqvian-transcript.md)"),
     ("/render", "re-render the last answer with markdown formatting"),
     ("/expand", "print the full output of the last tool call"),
+    ("/copy", "copy the last answer to the clipboard"),
+    ("/find", "search this session's transcript"),
     ("/cost", "show this session's usage (tool calls, tokens est.)"),
     ("/models", "list models (interactive picker)"),
     ("/model", "switch model (e.g. /model oqvian:latest)"),
@@ -971,6 +1042,30 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/cancel", "cancel the running turn"),
     ("/quit", "exit (also: /exit, /q, Ctrl-D)"),
 ]
+
+
+def _complete_arg(cmd: str, prefix: str) -> list[str]:
+    """Argument completion for slash commands."""
+    if cmd == "/model":
+        return _MODEL_CHOICES
+    if cmd in ("/export", "/resume", "/compact"):
+        import glob, os
+        if not prefix:
+            matches = glob.glob("*")
+        else:
+            matches = glob.glob(prefix + "*")
+        return [m + ("/" if os.path.isdir(m) else "") for m in matches]
+    if cmd == "/find":
+        return ["CVE-", "T1059", "T1190", "http"]
+    if cmd == "/permission":
+        return ["auto", "ask", "plan"]
+    if cmd == "/effort":
+        return ["off", "fast", "ultra"]
+    if cmd == "/title":
+        return ["tokens", "context", "model", "turns", "off"]
+    if cmd == "/autocompact":
+        return ["off", "80", "90"]
+    return []
 
 
 def read_interactive_line(prompt_str: str = "❯ ") -> str:
@@ -1044,8 +1139,9 @@ def read_interactive_line(prompt_str: str = "❯ ") -> str:
                     sys.stdout.flush()
                 continue
             if ch == "\t":  # Tab completion
-                if buf and "".join(buf).startswith("/") and " " not in "".join(buf):
-                    prefix = "".join(buf)
+                line_now = "".join(buf)
+                if line_now.startswith("/") and " " not in line_now:
+                    prefix = line_now
                     matches = [c for c, _ in SLASH_COMMANDS if c.startswith(prefix)]
                     if len(matches) == 1:
                         suffix = matches[0][len(prefix):]
@@ -1057,7 +1153,24 @@ def read_interactive_line(prompt_str: str = "❯ ") -> str:
                         for c, d in SLASH_COMMANDS:
                             if c.startswith(prefix):
                                 sys.stdout.write(f"  {c:<14} {d}\n")
-                        sys.stdout.write(prompt_str + "".join(buf))
+                        sys.stdout.write(prompt_str + line_now)
+                        sys.stdout.flush()
+                elif line_now.startswith("/") and " " in line_now:
+                    cmd, _, prefix = line_now.partition(" ")
+                    candidates = _complete_arg(cmd, prefix)
+                    matches = [c for c in candidates if c.startswith(prefix)]
+                    if len(matches) == 1:
+                        suffix = matches[0][len(prefix):]
+                        buf.extend(list(suffix))
+                        sys.stdout.write(suffix)
+                        sys.stdout.flush()
+                    elif len(matches) > 1:
+                        sys.stdout.write("\n")
+                        for m in matches[:30]:
+                            sys.stdout.write(f"  {m}\n")
+                        if len(matches) > 30:
+                            sys.stdout.write(f"  … and {len(matches) - 30} more\n")
+                        sys.stdout.write(prompt_str + line_now)
                         sys.stdout.flush()
                 continue
             if ch == "/" and not buf and not slash_shown:
@@ -1162,6 +1275,13 @@ def main(argv: list[str] | None = None) -> int:
             session_id = create_session(port, cwd)
 
         provider, model, groups, failures = fetch_models(port, session_id)
+        _MODEL_CHOICES.clear()
+        for _g in (groups or []):
+            for _m in _g.get("models", []):
+                _id = _m.get("id")
+                if _id:
+                    _MODEL_CHOICES.append(_id)
+        _MODEL_CHOICES = sorted(set(_MODEL_CHOICES)) or [model or "gemma-4-26b-uncensored"]
         if args.model:
             # allow "provider/model" or bare model id
             want_provider, _, want_model = args.model.partition("/")
@@ -1325,6 +1445,32 @@ def main(argv: list[str] | None = None) -> int:
                         print(dim("── last tool result ───────────────────────"))
                         print(out)
                         print(dim("───────────────────────────────────────────"))
+                elif cmd == "/copy":
+                    text = sess.last_answer
+                    if not text:
+                        print(dim("  no answer yet"))
+                    else:
+                        for tool in ("xclip", "xsel", "wl-copy"):
+                            if shutil.which(tool):
+                                subprocess.run([tool], input=text.encode(), check=False)
+                                print(ok(f"copied {len(text)} chars to clipboard"))
+                                break
+                        else:
+                            print(err("no clipboard tool found — install xclip or wl-copy"))
+                elif cmd == "/find":
+                    if not rest:
+                        print(dim("usage: /find <term>"))
+                    else:
+                        needle = rest.lower()
+                        hits = [(i, ln) for i, ln in enumerate(sess.transcript)
+                                if needle in ln.lower()]
+                        if not hits:
+                            print(dim(f"  no matches for {rest!r}"))
+                        else:
+                            for i, ln in hits[:25]:
+                                print(dim(f"[{i}] {ln[:220]}"))
+                            if len(hits) > 25:
+                                print(dim(f"  … and {len(hits) - 25} more"))
                 elif cmd == "/title":
                     if not rest:
                         print(f"title items: {', '.join(sess.title_items) or '(none)'}")
