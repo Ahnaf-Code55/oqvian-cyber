@@ -73,36 +73,41 @@ print(result)
 
 ---
 
-## Remote model — CLI here, inference there
+ ## New CLI — Codex frontend + OQVIAN tools
 
-Slow laptop? Keep the model on a bigger machine and still use the same CLI.
-`oqvian-code --remote` opens an SSH tunnel, points the tool-call bridge at the
-remote llama.cpp / Ollama server, and **never starts a local model**.
+The OQVIAN CLI is now the **Codex CLI** (native Rust TUI) with OQVIAN's remote
+model and security toolserver wired in. You get Codex's polished terminal UI
+(streaming, approval flows, terminal title, git integration) driven by the
+remote Gemma model, with OQVIAN's security tools available as MCP tools.
 
 ```bash
 # one-time: passwordless key for the tunnel
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/oqvian_remote_ed25519
-ssh-copy-id -i ~/.ssh/oqvian_remote_ed25519.pub user@model-box
+ssh-copy-id -i ~/.ssh/oqvian_remote_ed25519.pub ahnaf@192.168.0.107
 
 # every day
-./oqvian-remote                        # = ./oqvian-code --remote --effort fast
-./oqvian-remote -p "recon 192.168.1.1"
-./oqvian-remote --effort ultra         # minimal output, fastest turns
+./codex-oqvian                        # interactive TUI
+./codex-oqvian exec "recon 192.168.1.1"   # one-shot
 ```
+
+What it does on start: opens an SSH tunnel `127.0.0.1:18080 → 192.168.0.107:8080`,
+registers the OQVIAN MCP server (`kb`, `recon`, `execute`, `governance`,
+`transform`) in `~/.codex/config.toml`, and launches Codex pointed at the remote
+model `gemma-4-26b-uncensored`.
 
 | Component | Runs on |
 |---|---|
-| CLI, slash commands, spinner | this machine |
+| Codex TUI, slash commands | this machine |
 | MCP tools (nmap, nuclei, …) | this machine |
-| Scope file + audit log | this machine |
+| Scope file + audit log | this machine (via OQVIAN toolserver) |
 | Token generation | remote box via SSH tunnel |
 
-Defaults: `ahnaf@192.168.0.107:8080`, tunnel `127.0.0.1:18080`, model
-`gemma-4-26b-uncensored`. Override with `--remote user@host`, `--remote-port`,
-`--tunnel-port`, `--remote-model`, or the `OQVIAN_REMOTE*` environment
-variables. Inside the CLI, `/remote` shows tunnel + upstream state and
-`/status` shows where inference is running. A dropped tunnel is re-opened
-automatically before the next prompt.
+Defaults: remote `ahnaf@192.168.0.107:8080`, tunnel `127.0.0.1:18080`, model
+`gemma-4-26b-uncensored`. Override the remote with `--remote user@host`. Inside
+Codex, the OQVIAN tools appear as `mcp__oqvian__kb`, `mcp__oqvian__recon`, etc.
+
+The old Python CLI (`oqvian-code` / `oqvian-remote`) has been removed; the
+OQVIAN MCP toolserver (`mcp/server.py`) remains and is shared.
 
 ---
 

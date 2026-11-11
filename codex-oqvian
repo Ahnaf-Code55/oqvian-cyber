@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# codex-oqvian: run the Codex CLI frontend with OQVIAN's remote model +
+# security toolserver. Ensures the SSH tunnel is up first.
+set -euo pipefail
+
+REMOTE_DEFAULT="ahnaf@192.168.0.107"
+REMOTE_PORT=8080
+TUNNEL_PORT=18080
+KEY="${HOME}/.ssh/oqvian_remote_ed25519"
+
+# Ensure tunnel
+if ! curl -s -m 2 "http://127.0.0.1:${TUNNEL_PORT}/health" >/dev/null 2>&1; then
+  if [ ! -f "$KEY" ]; then
+    echo "No SSH key at $KEY — run: ssh-copy-id -i ${KEY}.pub ${REMOTE_DEFAULT}" >&2
+    exit 1
+  fi
+  ssh -N -f -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+      -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
+      -o ServerAliveInterval=20 -L "127.0.0.1:${TUNNEL_PORT}:127.0.0.1:${REMOTE_PORT}" \
+      "$REMOTE_DEFAULT"
+  for _ in $(seq 1 40); do
+    curl -s -m 1 "http://127.0.0.1:${TUNNEL_PORT}/health" >/dev/null 2>&1 && break
+    sleep 0.25
+  done
+fi
+
+# Ensure OQVIAN MCP server is registered (idempotent)
+python3 - "$HOME/.codex/config.toml" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+if "[mcp_servers.oqvian]" not in s:
+    s = s.rstrip() + '''
+[mcp_servers.oqvian]
+command = "/home/ifat/oqvian-cyber/.venv/bin/python"
+args = ["/home/ifat/oqvian-cyber/mcp/server.py"]
+startup_timeout_sec = 30
+tool_timeout_sec = 450
+
+[mcp_servers.oqvian.env]
+OQVIAN_TOOLSET = "core"
+OLLAMA_HOST = "127.0.0.1:11434"
+'''
+    open(p, "w").write(s)
+PY
+
+exec codex "$@"
