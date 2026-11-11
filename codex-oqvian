@@ -10,6 +10,9 @@ KEY="${HOME}/.ssh/oqvian_remote_ed25519"
 
 # Ensure tunnel
 if ! curl -s -m 2 "http://127.0.0.1:${TUNNEL_PORT}/health" >/dev/null 2>&1; then
+  echo "Remote inference server unreachable: ${REMOTE_DEFAULT}" >&2
+  echo "Power it on and check it answers on port 22/8080, then re-run ./codex-oqvian" >&2
+  echo "(Fast alternative: ./oqvian-remote)" >&2
   if [ ! -f "$KEY" ]; then
     echo "No SSH key at $KEY — run: ssh-copy-id -i ${KEY}.pub ${REMOTE_DEFAULT}" >&2
     exit 1
@@ -17,7 +20,10 @@ if ! curl -s -m 2 "http://127.0.0.1:${TUNNEL_PORT}/health" >/dev/null 2>&1; then
   ssh -N -f -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
       -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
       -o ServerAliveInterval=20 -L "127.0.0.1:${TUNNEL_PORT}:127.0.0.1:${REMOTE_PORT}" \
-      "$REMOTE_DEFAULT"
+      "$REMOTE_DEFAULT" || {
+        echo "Tunnel failed. Is ${REMOTE_DEFAULT} online?" >&2
+        exit 1
+      }
   for _ in $(seq 1 40); do
     curl -s -m 1 "http://127.0.0.1:${TUNNEL_PORT}/health" >/dev/null 2>&1 && break
     sleep 0.25
