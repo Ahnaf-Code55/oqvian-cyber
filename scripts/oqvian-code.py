@@ -441,6 +441,8 @@ class TurnStats:
         self.thinking = 0
         self.tool_result_chars = 0
         self._last_title = 0.0
+        self._thinking_dur_printed = False
+        self._explore_header = False
 
 
 async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
@@ -454,6 +456,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
     stats = TurnStats()
     assistant_started = False
     thinking_started = False
+    thinking_start: list[float] = []
     tool_starts: list[float] = []
     spinner_idx = 0
     last_spinner = 0.0
@@ -511,6 +514,8 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                 stats.tokens_out += len(delta) // 4
                 if ckind == "thinking":
                     thinking_parts.append(delta)
+                    if not thinking_start:
+                        thinking_start.append(time.monotonic())
                     if not quiet:
                         # FAST collapses thinking to one dim line; ULTRA hides it.
                         if effort == "ultra":
@@ -527,6 +532,13 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                             sys.stdout.write(f"{DIM}{ITALIC}{delta}{RESET}")
                             sys.stdout.flush()
                 else:
+                    # Transition from thinking to answer: print thinking duration.
+                    if thinking_start and not getattr(stats, "_thinking_dur_printed", False):
+                        dur = time.monotonic() - thinking_start[0]
+                        if not quiet and thinking_parts:
+                            sys.stdout.write(f"\n{DIM}Thought · {dur:.1f}s{RESET}\n")
+                            sys.stdout.flush()
+                        stats._thinking_dur_printed = True
                     if not quiet:
                         if not assistant_started:
                             sys.stdout.write(f"\r\033[K\n{BOLD}⏺ {RESET}")
@@ -543,11 +555,43 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
             elif kind == "tool/call":
                 stats.tool_calls += 1
                 tool_starts.append(time.monotonic())
+                # Compact exploration display (Claude Code style) for read/search tools.
+                name, args = tool_summary(data)
+                short = name
+                is_explore = False
+                detail = ""
+                low = short.lower()
+                try:
+                    a = json.loads(args) if isinstance(args, str) else (args or {})
+                except Exception:
+                    a = {}
+                if "read" in low:
+                    pth = a.get("file_path") or a.get("path") or a.get("file") or ""
+                    off = a.get("offset")
+                    lim = a.get("limit")
+                    if off is not None or lim is not None:
+                        start = off or 1
+                        end = (off or 1) + (lim or 0) - 1 if lim else ""
+                        rng = f":{start}-{end}" if end else ""
+                    else:
+                        rng = ""
+                    detail = f"→ Read {pth}{rng}"
+                    is_explore = True
+                elif "grep" in low or "search" in low or "glob" in low:
+                    pat = a.get("pattern") or a.get("query") or a.get("glob") or ""
+                    detail = f"→ Searched {pat!r}" if pat else f"→ {short}"
+                    is_explore = True
                 if not quiet:
-                    name, args = tool_summary(data)
-                    trunc = {"off": 300, "fast": 120, "ultra": 60}.get(effort, 300)
-                    sys.stdout.write(f"\r\033[K\n{DIM}⏺ {name} {args[:trunc]}{RESET}\n")
-                    sys.stdout.flush()
+                    if is_explore:
+                        if not getattr(stats, "_explore_header", False):
+                            stats._explore_header = True
+                            sys.stdout.write(f"\r\033[K\n{DIM}→ Explored{RESET}\n")
+                        sys.stdout.write(f"{DIM}  {detail}{RESET}\n")
+                        sys.stdout.flush()
+                    else:
+                        trunc = {"off": 300, "fast": 120, "ultra": 60}.get(effort, 300)
+                        sys.stdout.write(f"\r\033[K\n{DIM}⏺ {name} {args[:trunc]}{RESET}\n")
+                        sys.stdout.flush()
                 if perm_mode == "ask" and on_ask is not None:
                     # NOTE: the harness in --permission-mode ask would normally
                     # block server-side. This is a local UX gate so a user
@@ -616,6 +660,11 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                 ok_reason = isinstance(reason, dict) and reason.get("kind") in (None, "completed", "max-tokens")
                 if not quiet:
                     sys.stdout.write("\r\033[K")
+                    if thinking_start and not getattr(stats, "_thinking_dur_printed", False):
+                        dur = time.monotonic() - thinking_start[0]
+                        if thinking_parts:
+                            sys.stdout.write(f"{DIM}Thought · {dur:.1f}s{RESET}\n")
+                        stats._thinking_dur_printed = True
                     if assistant_started or thinking_started:
                         sys.stdout.write("\n")
                     duration = time.monotonic() - stats.start
