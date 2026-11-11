@@ -11,6 +11,8 @@ uses, so behaviour is identical between terminal and web.
     oqvian-code --permission-mode ask # ask before tool calls
     oqvian-code --effort fast         # FAST mode: low reasoning, brief answers
     oqvian-code --effort ultra        # ULTRA: max speed, minimal output
+    oqvian-code --remote              # use the model on ahnaf@192.168.0.107
+    oqvian-code --remote user@host --remote-model gemma-4-26b-uncensored
 
 Interactive UX (Claude Code-like):
   ❯ prompt with box-drawing banner, model + permission footer
@@ -35,6 +37,17 @@ FAST / ULTRA (effort knob):
   FAST cuts warm-up + per-turn CPU on your 4-core box dramatically;
   it trades some depth for speed. Same model, same harness, same tools.
   The knob is: /fast, /ultra, /effort off|fast|ultra  (or --effort at launch).
+
+REMOTE MODEL (no local inference):
+  --remote [user@host]   route inference to a llama.cpp/Ollama server on
+                         another machine over SSH. The CLI opens an SSH
+                         tunnel (127.0.0.1:<tunnel-port> -> host:8080),
+                         points the tool-call bridge at it, and never starts
+                         a local model. Tools still run here, under this
+                         machine's scope file and audit log.
+  Defaults: user@host ahnaf@192.168.0.107, remote port 8080,
+  tunnel port 18080, model gemma-4-26b-uncensored.
+  Needs a passwordless key: ~/.ssh/oqvian_remote_ed25519
 """
 from __future__ import annotations
 
@@ -89,6 +102,15 @@ def magenta(s: str) -> str: return f"{MAGENTA}{s}{RESET}"
 
 SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+# ── remote model defaults (SSH-tunnelled inference on another box) ─────── #
+REMOTE_DEFAULT = "ahnaf@192.168.0.107"
+REMOTE_PORT_DEFAULT = 8080          # llama.cpp / Ollama HTTP API on the remote
+TUNNEL_PORT_DEFAULT = 18080         # local end of the SSH tunnel
+REMOTE_MODEL_DEFAULT = "gemma-4-26b-uncensored"
+REMOTE_KEY = Path.home() / ".ssh" / "oqvian_remote_ed25519"
+PROXY_PORT = 11435
+PROXY_UPSTREAM_FILE = Path("/tmp/oqvian-proxy.upstream")
+
 EFFORT_PREAMBLE = {
     "off": "",
     "fast": "[FAST MODE: use low reasoning effort. Keep every answer to 150 words or fewer, minimal prose, call tools immediately without long analysis.]\n",
@@ -106,51 +128,147 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def ensure_services() -> None:
-    """Start Ollama + the tool-call bridge if they aren't already up.
+def _http_ok(url: str, timeout: float = 2.0) -> bool:
+    """True when something is listening and speaking HTTP (any status)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            r.read(1)
+        return True
+    except urllib.error.HTTPError:
+        return True          # a 4xx/5xx still proves the server is up
+    except Exception:
+        return False
 
-    Mirrors the checks in oqvian / oqvian-cli so you never get a blank
-    turn because a backend died.
+
+def pid_on_port(port: int) -> int | None:
+    """PID listening on 127.0.0.1:port, via ss (no extra deps)."""
+    try:
+        out = subprocess.run(["ss", "-ltnpH", f"sport = :{port}"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return None
+    import re as _re
+    m = _re.search(r"pid=(\d+)", out)
+    return int(m.group(1)) if m else None
+
+
+def ensure_tunnel(userhost: str, local_port: int, remote_port: int,
+                  remote_model: str = "") -> bool:
+    """Bring up the SSH tunnel to the remote inference server.
+
+    Returns True when a *new* tunnel was started. Idempotent: if the local end
+    already answers ``/health`` (llama.cpp) or ``/`` (Ollama), it does nothing.
     """
+    base = f"http://127.0.0.1:{local_port}"
+    if _http_ok(f"{base}/health", 1.5) or _http_ok(f"{base}/", 1.5):
+        return False
+
+    if not REMOTE_KEY.exists():
+        raise CliError(
+            f"no SSH key at {REMOTE_KEY} — install it once with:\n"
+            f"  ssh-copy-id -i {REMOTE_KEY}.pub {userhost}")
+    if shutil.which("ssh") is None:
+        raise CliError("ssh not found on PATH")
+
+    cmd = [
+        "ssh", "-N", "-f",
+        "-i", str(REMOTE_KEY), "-o", "IdentitiesOnly=yes",
+        "-o", "BatchMode=yes",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ServerAliveInterval=20", "-o", "ServerAliveCountMax=3",
+        "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}",
+        userhost,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+    for _ in range(40):
+        if _http_ok(f"{base}/health", 1.0) or _http_ok(f"{base}/", 1.0):
+            return True
+        time.sleep(0.25)
+    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    raise CliError(
+        f"SSH tunnel to {userhost}:{remote_port} failed"
+        + (f" — {detail[-1]}" if detail else "")
+        + f"\n  check: ssh -i {REMOTE_KEY} {userhost} 'curl -s localhost:{remote_port}/health'")
+
+
+def proxy_upstream() -> str | None:
+    try:
+        return PROXY_UPSTREAM_FILE.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def ensure_proxy(upstream: str, api: str) -> None:
+    """Run the tool-call bridge on 11435 pointed at *upstream*.
+
+    Restarts an existing bridge only when its upstream differs, so a bridge
+    shared with a browser session is not disturbed needlessly.
+    """
+    current = proxy_upstream()
+    if _http_ok(f"http://127.0.0.1:{PROXY_PORT}/", 1.0) and current == upstream:
+        return
+
+    pid = pid_on_port(PROXY_PORT)
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        for _ in range(20):
+            if not pid_on_port(PROXY_PORT):
+                break
+            time.sleep(0.15)
+
+    py = ROOT / ".venv" / "bin" / "python"
+    py = str(py) if py.exists() else (shutil.which("python3") or "python3")
+    proxy = ROOT / "mcp" / "toolcall_proxy.py"
+    if not proxy.exists():
+        raise CliError(f"tool-call bridge missing: {proxy}")
+
+    env = os.environ.copy()
+    env["OQVIAN_PROXY_UPSTREAM"] = upstream.rstrip("/")
+    env["OQVIAN_PROXY_UPSTREAM_API"] = api
+    env.setdefault("OQVIAN_PROXY_TOOL_MODE", "render")
+    out = Path("/tmp/oqvian-proxy.log")
+    subprocess.Popen([py, str(proxy)], env=env,
+                     stdout=out.open("a"), stderr=subprocess.STDOUT,
+                     start_new_session=True, stdin=subprocess.DEVNULL)
+    for _ in range(40):
+        if _http_ok(f"http://127.0.0.1:{PROXY_PORT}/", 1.0):
+            PROXY_UPSTREAM_FILE.write_text(upstream)
+            return
+        time.sleep(0.25)
+    raise CliError("tool-call bridge did not come up on 11435 "
+                   "(see /tmp/oqvian-proxy.log)")
+
+
+def ensure_services(remote: dict | None = None) -> None:
+    """Start the bridge (and Ollama, when running locally).
+
+    Remote mode never starts a local model: it opens an SSH tunnel to the
+    other machine and points the bridge at that instead.
+    """
+    if remote:
+        ensure_tunnel(remote["userhost"], remote["tunnel_port"],
+                      remote["remote_port"])
+        ensure_proxy(f"http://127.0.0.1:{remote['tunnel_port']}", "v1")
+        return
+
     ollama = shutil.which("ollama") or str(Path.home() / "ollama")
     if not Path(ollama).exists() and not shutil.which("ollama"):
         print(warn("⚠ ollama binary not found — model calls will fail. "
                    "Install from https://ollama.ai or check ~/ollama"), file=sys.stderr)
     else:
-        try:
-            with urllib.request.urlopen("http://127.0.0.1:11434/", timeout=2) as r:
-                r.read(1)
-        except Exception:
+        if not _http_ok("http://127.0.0.1:11434/", 2.0):
             subprocess.Popen([ollama, "serve"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
             for _ in range(20):
-                try:
-                    with urllib.request.urlopen("http://127.0.0.1:11434/", timeout=1) as r:
-                        r.read(1)
+                if _http_ok("http://127.0.0.1:11434/", 1.0):
                     break
-                except Exception:
-                    time.sleep(0.3)
-    # bridge 11435
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:11435/", timeout=2) as r:
-            r.read(1)
-    except Exception:
-        py = ROOT / ".venv" / "bin" / "python"
-        py = str(py) if py.exists() else (shutil.which("python3") or "python3")
-        proxy = ROOT / "mcp" / "toolcall_proxy.py"
-        if proxy.exists():
-            out = Path("/tmp/oqvian-proxy.log")
-            subprocess.Popen([py, str(proxy)], stdout=out.open("a"),
-                             stderr=subprocess.STDOUT, start_new_session=True,
-                             stdin=subprocess.DEVNULL)
-        for _ in range(20):
-            try:
-                with urllib.request.urlopen("http://127.0.0.1:11435/", timeout=1) as r:
-                    r.read(1)
-                break
-            except Exception:
                 time.sleep(0.3)
+    ensure_proxy("http://127.0.0.1:11434", "chat")
 
 
 def http_json(port: int, method: str, payload: dict | None = None, timeout: float = 30.0) -> dict:
@@ -416,7 +534,8 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
 
 
 def print_banner(cwd: Path, session_id: str, provider: str, model: str,
-                 perm: str, host_desc: dict | None = None, effort: str = "off") -> None:
+                 perm: str, host_desc: dict | None = None, effort: str = "off",
+                 remote: dict | None = None) -> None:
     badge = {"off": "", "fast": "  ⚡ FAST", "ultra": "  🔥 ULTRA"}.get(effort, "")
     print()
     print(bold("  ╔════════════════════════════════════════════════════════╗"))
@@ -424,6 +543,11 @@ def print_banner(cwd: Path, session_id: str, provider: str, model: str,
     print(bold("  ║  Claude Code-style CLI · 17+MCP tools              ║"))
     print(bold("  ╚════════════════════════════════════════════════════════╝"))
     print(dim(f"  model      {provider}/{model}"))
+    if remote:
+        print(dim(f"  inference  REMOTE {remote['userhost']}:{remote['remote_port']}"
+                  f"  (tunnel 127.0.0.1:{remote['tunnel_port']})"))
+    else:
+        print(dim("  inference  local (127.0.0.1:11434)"))
     print(dim(f"  session    {session_id}"))
     print(dim(f"  cwd        {cwd}"))
     print(dim(f"  permission {perm}  (/permission to change)"))
@@ -451,6 +575,7 @@ def print_help() -> None:
   /fast                 toggle FAST mode (low effort, brief answers)
   /ultra                toggle ULTRA mode (min effort, bullet-only answers)
   /effort [off|fast]    show or set effort level
+  /remote               remote inference status (SSH tunnel + upstream)
   /status               host, session, service status
   /cancel               cancel the running turn
   /quit                 exit (also: /exit, /q, Ctrl-D, Ctrl-C)
@@ -470,15 +595,18 @@ Tips:
   · Shift+Tab toggles plan mode in Claude Code; here use /permission plan
   · Headless:  oqvian-code -p "your task"   (like: claude -p "...")
   · Speed:     oqvian-code --effort fast     (same knob, at launch)
+  · Remote:    oqvian-code --remote          (model on ahnaf@192.168.0.107)
 """)
 
 
 class Session:
-    def __init__(self, port: int, session_id: str, perm_mode: str, effort: str = "off"):
+    def __init__(self, port: int, session_id: str, perm_mode: str, effort: str = "off",
+                 remote: dict | None = None):
         self.port = port
         self.session_id = session_id
         self.perm_mode = perm_mode  # auto | ask | plan
         self.effort = effort  # off | fast | ultra
+        self.remote = remote  # None (local) or dict(userhost, tunnel_port, ...)
         self.transcript: list[str] = []
         self.stats = TurnStats()
         self.total_tools = 0
@@ -490,6 +618,14 @@ class Session:
 
     def prompt(self, text: str, *, quiet: bool = False) -> tuple[bool, str]:
         self.log("user", text)
+        if self.remote:
+            # Re-open the tunnel if it dropped between turns; otherwise the
+            # bridge would answer 502 and the turn would look like a dead model.
+            try:
+                ensure_tunnel(self.remote["userhost"], self.remote["tunnel_port"],
+                              self.remote["remote_port"])
+            except CliError as exc:
+                print(warn(f"⚠ remote tunnel down: {exc}"), file=sys.stderr)
         preamble = EFFORT_PREAMBLE.get(self.effort, "")
         full_text = (preamble + text) if preamble else text
         body = {"type": "client-request", "rpcId": str(uuid.uuid4()),
@@ -530,6 +666,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="effort knob: off=full reasoning, fast=low effort + brief, ultra=min effort")
     p.add_argument("--fast", action="store_true", help="shortcut for --effort fast")
     p.add_argument("--ultra", action="store_true", help="shortcut for --effort ultra")
+    p.add_argument("--remote", nargs="?", const=REMOTE_DEFAULT, default=None,
+                   metavar="USER@HOST",
+                   help=f"run inference on {REMOTE_DEFAULT} over SSH "
+                        f"(never starts a local model)")
+    p.add_argument("--remote-model", default=REMOTE_MODEL_DEFAULT,
+                   help=f"model served by the remote (default: {REMOTE_MODEL_DEFAULT})")
+    p.add_argument("--remote-port", type=int, default=REMOTE_PORT_DEFAULT,
+                   help=f"remote HTTP API port (default: {REMOTE_PORT_DEFAULT})")
+    p.add_argument("--tunnel-port", type=int, default=TUNNEL_PORT_DEFAULT,
+                   help=f"local SSH tunnel port (default: {TUNNEL_PORT_DEFAULT})")
     p.add_argument("--resume", default=None,
                    help="resume session id (or 'latest' to pick the most recent)")
     p.add_argument("--cwd", default=os.getcwd())
@@ -566,7 +712,16 @@ def main(argv: list[str] | None = None) -> int:
         print(err("dsh not found on PATH"), file=sys.stderr)
         return 2
 
-    ensure_services()
+    remote = None
+    if args.remote:
+        remote = {"userhost": args.remote, "tunnel_port": args.tunnel_port,
+                  "remote_port": args.remote_port, "model": args.remote_model}
+
+    try:
+        ensure_services(remote)
+    except CliError as exc:
+        print(err(str(exc)), file=sys.stderr)
+        return 1
     port = free_port()
     env = os.environ.copy()
     env["DSH_PERMISSION_MODE"] = map_perm(args.permission_mode)
@@ -627,6 +782,18 @@ def main(argv: list[str] | None = None) -> int:
                 set_model(port, session_id, provider, want_provider)
             provider, model, groups, failures = fetch_models(port, session_id)
 
+        # Remote mode: select the model the other machine actually serves.
+        if remote and model != remote["model"]:
+            try:
+                set_model(port, session_id, provider, remote["model"])
+                provider, model, groups, failures = fetch_models(port, session_id)
+            except CliError as exc:
+                print(warn(f"⚠ could not select {remote['model']} on {provider}: {exc}"),
+                      file=sys.stderr)
+                print(warn("  models known to the harness: "
+                           + ", ".join(m.get("id", "?") for g in (groups or [])
+                                       for m in g.get("models", []))), file=sys.stderr)
+
         # FAST knob → harness-level reasoning effort (best-effort: older
         # providers ignore unknown effort values, prompt preamble still applies)
         if effort == "fast":
@@ -640,7 +807,7 @@ def main(argv: list[str] | None = None) -> int:
             except CliError:
                 pass
 
-        sess = Session(port, session_id, args.permission_mode, effort)
+        sess = Session(port, session_id, args.permission_mode, effort, remote)
 
         # ── One-shot (-p) ──────────────────────────────────────────────── #
         if args.prompt:
@@ -650,7 +817,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # ── Interactive ────────────────────────────────────────────────── #
         print_banner(cwd, session_id, provider, model,
-                     args.permission_mode, host_desc, effort)
+                     args.permission_mode, host_desc, effort, remote)
 
         buffer = ""
         while True:
@@ -686,7 +853,8 @@ def main(argv: list[str] | None = None) -> int:
                     print_help()
                 elif cmd == "/clear":
                     os.system("clear" if os.name != "nt" else "cls")
-                    print_banner(cwd, session_id, provider, model, args.permission_mode, effort=effort)
+                    print_banner(cwd, session_id, provider, model, args.permission_mode,
+                                 effort=effort, remote=remote)
                 elif cmd == "/compact":
                     print(dim("compacting context — summarising then refreshing session…"))
                     try:
@@ -695,7 +863,7 @@ def main(argv: list[str] | None = None) -> int:
                             "next steps) as a compact handoff note I can paste into a "
                             "fresh session.", quiet=True)
                         session_id = create_session(port, cwd)
-                        sess = Session(port, session_id, args.permission_mode, effort)
+                        sess = Session(port, session_id, args.permission_mode, effort, remote)
                         sess.log("context", summary)
                         print(ok(f"compacted → new session {session_id}"))
                         print(dim(f"handoff note: {summary[:400]}…"))
@@ -809,11 +977,28 @@ def main(argv: list[str] | None = None) -> int:
                                   "take effect server-side; display only here)"))
                     else:
                         print(err("usage: /permission [auto|ask|plan]"))
+                elif cmd == "/remote":
+                    if not remote:
+                        print(dim("inference: local (127.0.0.1:11434)"))
+                        print(dim("to use another machine's model, relaunch with:"))
+                        print(f"  {cyan('oqvian-code --remote user@host')}")
+                        continue
+                    base = f"http://127.0.0.1:{remote['tunnel_port']}"
+                    alive = _http_ok(f"{base}/health", 1.5) or _http_ok(f"{base}/", 1.5)
+                    print(f"inference: {cyan('REMOTE')} {remote['userhost']}:{remote['remote_port']}")
+                    print(f"tunnel:    {base}  {'UP' if alive else err('DOWN')}")
+                    print(f"model:     {remote['model']}")
+                    print(f"bridge:    http://127.0.0.1:{PROXY_PORT} -> {proxy_upstream() or '?'}")
+                    if not alive:
+                        print(dim("next prompt will try to re-open the tunnel automatically"))
                 elif cmd == "/status":
                     try:
+                        where = (f"remote {remote['userhost']}:{remote['remote_port']}"
+                                 f" via tunnel {remote['tunnel_port']}" if remote
+                                 else "local (127.0.0.1:11434)")
                         print(f"cwd: {cwd}\nport: {port}\nsession: {session_id}"
                               f"\nmodel: {provider}/{model}\npermission: {args.permission_mode}"
-                              f"\neffort: {effort}\nhost: {host_desc}")
+                              f"\neffort: {effort}\ninference: {where}\nhost: {host_desc}")
                     except Exception as exc:
                         print(err(str(exc)))
                 elif cmd == "/cancel":

@@ -508,6 +508,7 @@ class Handler(BaseHTTPRequestHandler):
         resp = None
         calls = None
         leftover = ""
+        last_err = "no response"
         attempts = max(1, _RETRIES)
         for attempt in range(attempts):
             if UPSTREAM_API == "v1":
@@ -537,11 +538,19 @@ class Handler(BaseHTTPRequestHandler):
                 up = urlreq.urlopen(r, timeout=_TIMEOUT)
                 raw_resp = json.loads(up.read())
             except urlerr.HTTPError as e:
+                # A real HTTP answer (4xx/5xx) is the upstream's verdict: report it.
                 raise _Upstream(e.read().decode(errors="replace").encode(), e.code)
-            except Exception as e:  # upstream unreachable / timed out
-                raise _Upstream(
-                    json.dumps({"error": {"message": str(e)}}).encode(), 502
+            except Exception as e:
+                # Transport drop: the remote llama-server restarted, the SSH
+                # tunnel blinked, or the socket was cut. Not a model answer, so
+                # retry the turn instead of handing the agent a 502.
+                last_err = e
+                sys.stderr.write(
+                    f"[toolcall-proxy] upstream transport error attempt "
+                    f"{attempt + 1}/{attempts}: {e}\n"
                 )
+                time.sleep(min(2.0 * (attempt + 1), 8.0))
+                continue
 
             resp = (
                 raw_resp
@@ -580,6 +589,12 @@ class Handler(BaseHTTPRequestHandler):
                 f"[toolcall-proxy] empty completion, retry "
                 f"{attempt + 1}/{attempts}  {_dbg}\n"
             )
+
+        if resp is None:
+            raise _Upstream(
+                json.dumps({"error": {
+                    "message": f"upstream unreachable after {attempts} attempt(s): {last_err}"
+                }}).encode(), 502)
 
         if calls:
             sys.stderr.write(

@@ -73,7 +73,38 @@ print(result)
 
 ---
 
-## The 17 MCP Tools
+## Remote model — CLI here, inference there
+
+Slow laptop? Keep the model on a bigger machine and still use the same CLI.
+`oqvian-code --remote` opens an SSH tunnel, points the tool-call bridge at the
+remote llama.cpp / Ollama server, and **never starts a local model**.
+
+```bash
+# one-time: passwordless key for the tunnel
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/oqvian_remote_ed25519
+ssh-copy-id -i ~/.ssh/oqvian_remote_ed25519.pub user@model-box
+
+# every day
+./oqvian-remote                        # = ./oqvian-code --remote --effort fast
+./oqvian-remote -p "recon 192.168.1.1"
+./oqvian-remote --effort ultra         # minimal output, fastest turns
+```
+
+| Component | Runs on |
+|---|---|
+| CLI, slash commands, spinner | this machine |
+| MCP tools (nmap, nuclei, …) | this machine |
+| Scope file + audit log | this machine |
+| Token generation | remote box via SSH tunnel |
+
+Defaults: `ahnaf@192.168.0.107:8080`, tunnel `127.0.0.1:18080`, model
+`gemma-4-26b-uncensored`. Override with `--remote user@host`, `--remote-port`,
+`--tunnel-port`, `--remote-model`, or the `OQVIAN_REMOTE*` environment
+variables. Inside the CLI, `/remote` shows tunnel + upstream state and
+`/status` shows where inference is running. A dropped tunnel is re-opened
+automatically before the next prompt.
+
+---
 
 ### Original Tools (5)
 | Tool | Purpose |

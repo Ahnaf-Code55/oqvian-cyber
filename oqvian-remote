@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# OQVIAN CODE — remote mode launcher.
+#
+# Runs the CLI exactly like ./oqvian-code, but inference happens on the box
+# running the big model (default ahnaf@192.168.0.107:8080) over an SSH tunnel.
+# Nothing is loaded into this machine's RAM: tools, scope checks and the audit
+# log stay here, only token generation is remote.
+#
+#   ./oqvian-remote                       # interactive, FAST mode
+#   ./oqvian-remote -p "scan 192.168.1.1"  # one-shot
+#   ./oqvian-remote --effort ultra        # slower box? go minimal
+#   OQVIAN_REMOTE=user@host ./oqvian-remote
+#
+# Environment overrides:
+#   OQVIAN_REMOTE         user@host of the model box (default ahnaf@192.168.0.107)
+#   OQVIAN_REMOTE_PORT    HTTP API port there (default 8080)
+#   OQVIAN_TUNNEL_PORT    local tunnel port (default 18080)
+#   OQVIAN_REMOTE_MODEL   model id served there (default gemma-4-26b-uncensored)
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REMOTE="${OQVIAN_REMOTE:-ahnaf@192.168.0.107}"
+REMOTE_PORT="${OQVIAN_REMOTE_PORT:-8080}"
+TUNNEL_PORT="${OQVIAN_TUNNEL_PORT:-18080}"
+REMOTE_MODEL="${OQVIAN_REMOTE_MODEL:-gemma-4-26b-uncensored}"
+
+exec "$HERE/oqvian-code" \
+  --remote "$REMOTE" \
+  --remote-port "$REMOTE_PORT" \
+  --tunnel-port "$TUNNEL_PORT" \
+  --remote-model "$REMOTE_MODEL" \
+  "$@"

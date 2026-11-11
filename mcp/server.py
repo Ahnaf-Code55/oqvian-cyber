@@ -3688,5 +3688,26 @@ def autonomous_loop(target: str = "", goal: str = "root",
 
 
 if __name__ == "__main__":
+    # Tool surface control. A 26B model on CPU spends most of its prompt budget
+    # on JSON schemas, not on the task: the full 22-tool surface is ~28 KB of
+    # schema per turn. OQVIAN_TOOLSET=core keeps only the five tools that carry
+    # the workflow (grounding, recon, execution, scope/audit, encoding) and drops
+    # the 17 orchestration extras, which the model reaches through them anyway.
+    _toolset = os.environ.get("OQVIAN_TOOLSET", "full").strip().lower()
+    _CORE_TOOLS = {"kb", "recon", "execute", "governance", "transform"}
+    if _toolset == "core":
+        import asyncio
+        _dropped = []
+        for _t in asyncio.run(mcp.list_tools()):
+            if _t.name not in _CORE_TOOLS:
+                try:
+                    mcp.remove_tool(_t.name)
+                    _dropped.append(_t.name)
+                except Exception:
+                    pass
+        sys.stderr.write(
+            f"[oqvian] toolset=core: kept {sorted(_CORE_TOOLS)}, "
+            f"dropped {len(_dropped)} tools\n")
+
     _audit("server", "start", detail=str(INDEX))
     mcp.run()
