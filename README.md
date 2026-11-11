@@ -106,8 +106,12 @@ Defaults: remote `ahnaf@192.168.0.107:8080`, tunnel `127.0.0.1:18080`, model
 `gemma-4-26b-uncensored`. Override the remote with `--remote user@host`. Inside
 Codex, the OQVIAN tools appear as `mcp__oqvian__kb`, `mcp__oqvian__recon`, etc.
 
-The old Python CLI (`oqvian-code` / `oqvian-remote`) has been removed; the
-OQVIAN MCP toolserver (`mcp/server.py`) remains and is shared.
+Two frontends are available:
+
+- `./oqvian-remote` — **fast** Python CLI, optimized for the remote CPU model (~3 min/turn). Recommended primary.
+- `./codex-oqvian` — Codex's native TUI (richer UI, but ~10+ min/turn on CPU due to larger system prompt).
+
+Both share the same OQVIAN MCP toolserver, scope file, and audit log.
 
 ---
 
