@@ -814,6 +814,98 @@ def map_perm(mode: str) -> str:
     return {"auto": "danger-full-access", "ask": "ask", "plan": "plan"}[mode]
 
 
+SLASH_COMMANDS: list[tuple[str, str]] = [
+    ("/help", "show this help"),
+    ("/clear", "clear the screen (new session)"),
+    ("/compact", "compact context: summarise + start fresh session"),
+    ("/init", "scaffold OQVIAN.md session-context file"),
+    ("/review", "ask the model to review + summarise current findings"),
+    ("/resume", "list previous sessions to resume"),
+    ("/export", "export transcript (default: oqvian-transcript.md)"),
+    ("/render", "re-render the last answer with markdown formatting"),
+    ("/cost", "show this session's usage (tool calls, tokens est.)"),
+    ("/models", "list models (interactive picker)"),
+    ("/model", "switch model (e.g. /model oqvian:latest)"),
+    ("/permission", "show / change permission mode (auto|ask|plan)"),
+    ("/fast", "toggle FAST mode (low effort, brief answers)"),
+    ("/ultra", "toggle ULTRA mode (min effort, bullet-only answers)"),
+    ("/effort", "show or set effort level (off|fast|ultra)"),
+    ("/remote", "remote inference status (SSH tunnel + upstream)"),
+    ("/status", "host, session, service status"),
+    ("/cancel", "cancel the running turn"),
+    ("/quit", "exit (also: /exit, /q, Ctrl-D)"),
+]
+
+
+def read_interactive_line(prompt_str: str = "❯ ") -> str:
+    """Read a line; auto-shows slash commands when '/' is typed first."""
+    if not sys.stdin.isatty():
+        return input(prompt_str).rstrip("\n")
+
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    buf: list[str] = []
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write(prompt_str)
+        sys.stdout.flush()
+        slash_shown = False
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "\n" or ch == "\r":
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                return "".join(buf)
+            if ch == "\x03":  # Ctrl-C
+                raise KeyboardInterrupt
+            if ch == "\x04":  # Ctrl-D
+                if not buf:
+                    raise EOFError
+                continue
+            if ch == "\x7f" or ch == "\b":  # backspace
+                if buf:
+                    buf.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+            if ch == "\t":  # Tab completion
+                if buf and "".join(buf).startswith("/") and " " not in "".join(buf):
+                    prefix = "".join(buf)
+                    matches = [c for c, _ in SLASH_COMMANDS if c.startswith(prefix)]
+                    if len(matches) == 1:
+                        suffix = matches[0][len(prefix):]
+                        buf.extend(list(suffix))
+                        sys.stdout.write(suffix)
+                        sys.stdout.flush()
+                    elif len(matches) > 1:
+                        sys.stdout.write("\n")
+                        for c, d in SLASH_COMMANDS:
+                            if c.startswith(prefix):
+                                sys.stdout.write(f"  {c:<14} {d}\n")
+                        sys.stdout.write(prompt_str + "".join(buf))
+                        sys.stdout.flush()
+                continue
+            if ch == "/" and not buf and not slash_shown:
+                slash_shown = True
+                buf.append(ch)
+                sys.stdout.write(ch)
+                sys.stdout.flush()
+                sys.stdout.write("\n")
+                for c, d in SLASH_COMMANDS:
+                    sys.stdout.write(f"  {DIM}{c:<14}{RESET} {dim(d)}\n")
+                sys.stdout.write(f"{bold(prompt_str)}{''.join(buf)}")
+                sys.stdout.flush()
+                continue
+            buf.append(ch)
+            sys.stdout.write(ch)
+            sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
     if args.version:
@@ -947,7 +1039,7 @@ def main(argv: list[str] | None = None) -> int:
         buffer = ""
         while True:
             try:
-                line = input(f"{bold('❯')} ").rstrip("\n")
+                line = read_interactive_line(f"{bold('❯')} ").rstrip("\n")
             except EOFError:
                 print("\nBye.")
                 break
