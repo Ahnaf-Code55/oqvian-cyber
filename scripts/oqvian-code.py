@@ -495,7 +495,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                 stats.tool_calls += 1
                 if not quiet:
                     name, args = tool_summary(data)
-                    trunc = {"off": 100, "fast": 60, "ultra": 40}.get(effort, 100)
+                    trunc = {"off": 300, "fast": 120, "ultra": 60}.get(effort, 300)
                     sys.stdout.write(f"\r\033[K\n{DIM}⏺ {name} {args[:trunc]}{RESET}\n")
                     sys.stdout.flush()
                 if perm_mode == "ask" and on_ask is not None:
@@ -508,8 +508,43 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         raise CliError("cancelled by user at tool-call gate")
             elif kind == "tool/result":
                 if not quiet:
-                    sys.stdout.write(f"{DIM}  ✓ done{RESET}\n")
-                    sys.stdout.flush()
+                    # Show the actual tool output, not just "done" — the point of
+                    # a CLI is that the operator can read what the tool found
+                    # without asking the model to repeat it.
+                    result_text = None
+                    for key in ("result", "output", "content", "stdout", "text",
+                                "stderr", "response", "data"):
+                        v = data.get(key)
+                        if isinstance(v, str) and v.strip():
+                            result_text = v
+                            break
+                        if isinstance(v, dict):
+                            for k2 in ("text", "content", "output", "stdout",
+                                       "result", "message"):
+                                if isinstance(v.get(k2), str) and v.get(k2).strip():
+                                    result_text = v[k2]
+                                    break
+                            if result_text:
+                                break
+                    if result_text is None:
+                        # Fall back to the longest string value in the payload.
+                        strs = [(k, v) for k, v in data.items()
+                                if isinstance(v, str) and v.strip()]
+                        if strs:
+                            result_text = max(strs, key=lambda kv: len(kv[1]))[1]
+                    if result_text:
+                        cap = 6000
+                        if len(result_text) > cap:
+                            shown = (result_text[:cap]
+                                     + f"\n... ({len(result_text) - cap} more chars)")
+                        else:
+                            shown = result_text
+                        for line in shown.splitlines():
+                            sys.stdout.write(f"{DIM}  │ {line}{RESET}\n")
+                        sys.stdout.flush()
+                    else:
+                        sys.stdout.write(f"{DIM}  ✓ done{RESET}\n")
+                        sys.stdout.flush()
             elif kind == "llm/retry":
                 if not quiet:
                     retry = data.get("retry", "?")

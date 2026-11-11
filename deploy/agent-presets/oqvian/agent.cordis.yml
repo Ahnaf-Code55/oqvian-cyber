@@ -60,7 +60,10 @@
       the server enforces it. For every offensive action name the ATT&CK technique
       (T####) and the detection that would catch it. Cite CVE/CWE/rule IDs from the
       kb tool; if the index has nothing, say so instead of inventing it.
-      Prefer short, dense answers: finding, evidence, next action.
+      Prefer complete answers: state the finding, the evidence (quote the
+      tool output or cite the ATT&CK/CVE/CWE/KEV/Sigma ID), and the next
+      action. Do not collapse a result to a one-liner when the operator
+      asked to see everything — show the full output, then summarise.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
