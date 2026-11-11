@@ -448,8 +448,15 @@ class TurnStats:
 async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         perm_mode: str = "auto", verbose: bool = False,
                         on_ask=None, effort: str = "off",
-                        input_tokens_est: int = 0):
+                        input_tokens_est: int = 0,
+                        title_items: list[str] | None = None,
+                        context_window: int = 65536,
+                        context_chars: int = 0,
+                        model: str = "",
+                        total_turns: int = 0):
     """Consume the events.mux stream for one turn. Returns (ok, text, stats)."""
+    if title_items is None:
+        title_items = ["tokens"]
     uri = f"ws://127.0.0.1:{port}/api/events.mux"
     text_parts: list[str] = []
     thinking_parts: list[str] = []
@@ -551,7 +558,19 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         now = time.monotonic()
                         if now - getattr(stats, "_last_title", stats.start) >= 0.3:
                             stats._last_title = now
-                            sys.stderr.write(f"\033]0;OQVIAN · ~{stats.tokens_out} tok\007")
+                            parts = []
+                            if "tokens" in title_items:
+                                parts.append(f"~{stats.tokens_out} tok")
+                            if "context" in title_items:
+                                used = (context_chars + stats.tool_result_chars) // 4
+                                pct = (used / context_window * 100) if context_window else 0
+                                parts.append(f"ctx {pct:.0f}%")
+                            if "model" in title_items:
+                                parts.append(model)
+                            if "turns" in title_items:
+                                parts.append(f"t{total_turns + 1}")
+                            title = " · ".join(parts) if parts else "OQVIAN"
+                            sys.stderr.write(f"\033]0;OQVIAN · {title}\007")
                             sys.stderr.flush()
                     text_parts.append(delta)
             elif kind == "tool/call":
@@ -733,6 +752,8 @@ def print_help() -> None:
   /resume               list previous sessions to resume
   /export [file]        export transcript (default: oqvian-transcript.md)
   /render               re-render the last answer with markdown formatting
+  /title [items]        configure terminal title (tokens,context,model,turns; or 'off')
+  /autocompact [pct]    auto-compact when context exceeds pct% (0=off, default 80)
   /cost                 show this session's usage (tool calls, tokens est.)
   /models               list models (interactive picker)
   /model <id>           switch model (e.g. /model oqvian:latest)
@@ -780,6 +801,9 @@ class Session:
         self.total_turns = 0
         self.context_chars = 0
         self.last_answer = ""
+        # Codex-style configurable terminal title + auto-compaction.
+        self.title_items = ["tokens"]  # subset of: tokens, context, model, turns, cwd
+        self.autocompact = 0.0  # 0 = off; else fraction of context window (e.g. 0.8)
 
     def log(self, who: str, text: str) -> None:
         self.transcript.append(f"[{who}] {text}")
@@ -817,13 +841,34 @@ class Session:
                                               quiet=quiet, perm_mode=self.perm_mode,
                                               effort=self.effort,
                                               input_tokens_est=max(4000 if self.remote else 2000,
-                                                                  (len(full_text) + self.context_chars) // 4)))
+                                                                  (len(full_text) + self.context_chars) // 4),
+                                      title_items=self.title_items,
+                                      context_window=self.context_window,
+                                      context_chars=self.context_chars,
+                                      total_turns=self.total_turns))
         self.total_turns += 1
         self.total_tools += turn_stats.tool_calls
         self.total_tokens += turn_stats.tokens_out
         self.context_chars += len(full_text) + len(text) + turn_stats.tool_result_chars
         self.last_answer = text
         self.log("assistant", text)
+        # Codex-style auto-compaction when context usage crosses the threshold.
+        if (self.autocompact > 0 and self.context_window
+                and self.context_chars // 4 > self.autocompact * self.context_window):
+            print(warn(f"⚠ context at {self.context_chars//4}/{self.context_window} tokens "
+                       f"— auto-compacting"), file=sys.stderr)
+            try:
+                ok_, summary = self.prompt(
+                    "Summarise the current engagement (targets, findings, loot, "
+                    "next steps) as a compact handoff note.", quiet=True)
+                sid = create_session(self.port, Path.cwd())
+                # keep same session object but reset context accounting
+                self.session_id = sid
+                self.context_chars = len(summary) if summary else 0
+                self.transcript = [f"[context] {summary}"]
+                print(ok(f"auto-compacted → new session {sid}"))
+            except Exception as exc:
+                print(err(f"auto-compact failed: {exc}"), file=sys.stderr)
         return ok_, text
 
 
@@ -1175,6 +1220,40 @@ def main(argv: list[str] | None = None) -> int:
                         console.print(_RichMarkdown(sess.last_answer))
                     else:
                         print(sess.last_answer)
+                elif cmd == "/title":
+                    if not rest:
+                        print(f"title items: {', '.join(sess.title_items) or '(none)'}")
+                        print(dim("  usage: /title tokens context model turns  (or 'off' to clear)"))
+                    elif rest.lower() == "off":
+                        sess.title_items = []
+                        print(ok("terminal title cleared (model name only)"))
+                    else:
+                        items = [x.strip().lower() for x in rest.replace(",", " ").split()]
+                        valid = {"tokens", "context", "model", "turns"}
+                        bad = [x for x in items if x not in valid]
+                        if bad:
+                            print(err(f"unknown items: {bad} (valid: {sorted(valid)})"))
+                        else:
+                            sess.title_items = items
+                            print(ok(f"title items: {', '.join(items) or '(none)'}"))
+                elif cmd == "/autocompact":
+                    if not rest:
+                        state = "off" if sess.autocompact <= 0 else f"{int(sess.autocompact*100)}%"
+                        print(f"autocompact: {state}")
+                        print(dim("  usage: /autocompact 80  (percent) or /autocompact off"))
+                    else:
+                        if rest.lower() in ("off", "0"):
+                            sess.autocompact = 0.0
+                            print(ok("autocompact disabled"))
+                        else:
+                            try:
+                                pct = float(rest.strip().rstrip("%"))
+                                if pct < 10 or pct > 95:
+                                    raise ValueError
+                                sess.autocompact = pct / 100.0
+                                print(ok(f"autocompact: trigger at {pct:.0f}% context usage"))
+                            except ValueError:
+                                print(err("percent must be between 10 and 95"))
                     used = sess.context_chars // 4
                     pct = (used / sess.context_window * 100) if sess.context_window else 0
                     print(f"session    {session_id}")
