@@ -44,6 +44,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import select
+import socket
 import sys
 import threading
 import time
@@ -383,6 +385,10 @@ class _Upstream(Exception):
         self.status = status
 
 
+class _ClientGone(Exception):
+    """The client disconnected while the upstream was still working."""
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "oqvian-toolcall-bridge"
@@ -468,6 +474,11 @@ class Handler(BaseHTTPRequestHandler):
             f"prompt_chars={sum(len(str(m.get('content') or '')) for m in req.get('messages', []))}, "
             f"stream={want_stream}\n"
         )
+        # Name the surface: when a tool goes missing this line is the evidence,
+        # and 27 KB of schema is otherwise invisible.
+        sys.stderr.write(
+            f"[toolcall-proxy] tools: {sorted(names)}\n"
+        )
 
         if want_stream:
             # Answer *before* doing the work: the client's request timeout starts
@@ -484,11 +495,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._emit_nonstream(resp, calls, leftover)
 
-    def _run_upstream(self, req, hdrs, names):
+    def _run_upstream(self, req, hdrs, names, box=None):
         """Buffer one tool turn upstream. Returns ``(resp, calls, leftover)``.
 
         Raises ``_Upstream`` when the upstream itself failed, so each caller can
         report it in its own wire form (a JSON body, or an SSE chunk).
+        Raises ``_ClientGone`` when the client disconnected mid-turn.
         """
         up_req = dict(req)
         up_req["stream"] = False
@@ -511,6 +523,8 @@ class Handler(BaseHTTPRequestHandler):
         last_err = "no response"
         attempts = max(1, _RETRIES)
         for attempt in range(attempts):
+            if box is not None and box.get("abort") is not None and box["abort"].is_set():
+                raise _ClientGone()
             if UPSTREAM_API == "v1":
                 body = dict(up_req)
                 if attempt:
@@ -536,11 +550,15 @@ class Handler(BaseHTTPRequestHandler):
             _t0 = time.time()
             try:
                 up = urlreq.urlopen(r, timeout=_TIMEOUT)
+                if box is not None:
+                    box["up"] = up
                 raw_resp = json.loads(up.read())
             except urlerr.HTTPError as e:
                 # A real HTTP answer (4xx/5xx) is the upstream's verdict: report it.
                 raise _Upstream(e.read().decode(errors="replace").encode(), e.code)
             except Exception as e:
+                if box is not None and box.get("abort") is not None and box["abort"].is_set():
+                    raise _ClientGone()
                 # Transport drop: the remote llama-server restarted, the SSH
                 # tunnel blinked, or the socket was cut. Not a model answer, so
                 # retry the turn instead of handing the agent a 502.
@@ -608,6 +626,17 @@ class Handler(BaseHTTPRequestHandler):
             )
         return resp, calls, leftover
 
+    def _client_closed(self) -> bool:
+        """Non-blocking check: has the client gone away?"""
+        try:
+            r, _, _ = select.select([self.connection], [], [], 0)
+            if not r:
+                return False
+            data = self.connection.recv(1, socket.MSG_PEEK)
+            return data == b""
+        except Exception:
+            return True
+
     def _stream_buffered(self, req, hdrs, names):
         """Stream a buffered tool turn without letting the client time out.
 
@@ -617,11 +646,13 @@ class Handler(BaseHTTPRequestHandler):
         it costs the client nothing.
         """
         self._sse_headers()
-        box: dict = {}
+        box: dict = {"abort": threading.Event(), "up": None}
 
         def work():
             try:
-                box["ok"] = self._run_upstream(req, hdrs, names)
+                box["ok"] = self._run_upstream(req, hdrs, names, box=box)
+            except _ClientGone:
+                box["gone"] = True
             except _Upstream as e:
                 box["err"] = e
             except Exception as e:  # never let the worker die without a trace
@@ -635,13 +666,31 @@ class Handler(BaseHTTPRequestHandler):
             while t.is_alive():
                 t.join(_KEEPALIVE)
                 if t.is_alive():
+                    if self._client_closed():
+                        sys.stderr.write("[toolcall-proxy] client cancelled — closing upstream\n")
+                        box["abort"].set()
+                        up = box.get("up")
+                        if up is not None:
+                            try:
+                                up.close()
+                            except Exception:
+                                pass
+                        return
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
-            # Client gave up (cancelled turn, Ctrl-C). Stop feeding a dead socket;
-            # the worker is a daemon thread and is reaped with the process.
+            # Client gave up (cancelled turn, Ctrl-C). Tell the worker to stop.
+            box["abort"].set()
+            up = box.get("up")
+            if up is not None:
+                try:
+                    up.close()
+                except Exception:
+                    pass
             return
 
+        if box.get("gone"):
+            return
         if "ok" in box:
             resp, calls, leftover = box["ok"]
             try:

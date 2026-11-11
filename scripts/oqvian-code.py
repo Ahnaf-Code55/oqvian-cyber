@@ -243,6 +243,25 @@ def ensure_proxy(upstream: str, api: str) -> None:
                    "(see /tmp/oqvian-proxy.log)")
 
 
+def remote_slot_busy(remote: dict) -> int | None:
+    """How many prompt tokens the remote is still chewing on, or None if idle.
+
+    ``--parallel 1`` means a turn queues behind whatever the server is already
+    doing, and a queued request looks exactly like a dead model: no output, no
+    error. Reading /slots before sending turns that silence into one line.
+    """
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{remote['tunnel_port']}/slots", timeout=2.0) as r:
+            slots = json.load(r)
+    except Exception:
+        return None
+    for slot in slots if isinstance(slots, list) else []:
+        if isinstance(slot, dict) and slot.get("is_processing"):
+            return int(slot.get("n_prompt_tokens") or 0)
+    return None
+
+
 def ensure_services(remote: dict | None = None) -> None:
     """Start the bridge (and Ollama, when running locally).
 
@@ -626,6 +645,10 @@ class Session:
                               self.remote["remote_port"])
             except CliError as exc:
                 print(warn(f"⚠ remote tunnel down: {exc}"), file=sys.stderr)
+            busy = remote_slot_busy(self.remote)
+            if busy:
+                print(warn(f"⚠ remote model still busy ({busy} prompt tokens) — "
+                           "this turn queues behind it"), file=sys.stderr)
         preamble = EFFORT_PREAMBLE.get(self.effort, "")
         full_text = (preamble + text) if preamble else text
         body = {"type": "client-request", "rpcId": str(uuid.uuid4()),

@@ -10,7 +10,16 @@
 #      the citation rule (ATT&CK/CVE IDs, or say the index is empty) and the
 #      brevity rule a CPU-bound model needs.
 #
-#   2. `skill-filesystem` and `tool-skill` are disabled. dsh renders every
+#   2. The generic coding tools are switched off — jobs, goals, plan mode,
+#      compaction, sub-agent delegation, ask-user, todo, web fetch and the
+#      grep/glob tool. Nineteen harness tools measured ~23 KB of JSON schema
+#      per turn; the five MCP tools are 4.6 KB. On CPU prompt evaluation runs
+#      at ~22 tok/s, so every kilobyte of schema is seconds of waiting before
+#      the model has even started. What stays is `bash` (arbitrary local
+#      shell) and `fs` (read/write/edit) — everything else OQVIAN does
+#      through its own kb/recon/execute/governance/transform surface.
+#
+#   3. `skill-filesystem` and `tool-skill` are disabled. dsh renders every
 #      installed skill as name+description in an <available_skills> reminder;
 #      on a machine with a few hundred skills that block measured ~174 KB
 #      (~45k tokens) for a request whose actual task was 7 KB. Removing it
@@ -84,6 +93,7 @@
 
 - id: tool-fs-search
   name: '@deepseek-ai/dsh-tool-fs-search'
+  disabled: true
   config:
     sampleOverCapGlobResults: false
 
@@ -98,6 +108,7 @@
 # chooses is whether its agent can collect and stop background work at all.
 - id: tool-jobs
   name: '@deepseek-ai/dsh-tool-jobs'
+  disabled: true
 
 # ── skills ──────────────────────────────────────────────────────────────────
 
@@ -124,6 +135,7 @@
 # session. What a preset chooses is whether its agent can call the goal tool.
 - id: tool-goal
   name: '@deepseek-ai/dsh-tool-goal'
+  disabled: true
 
 # ── plan mode ───────────────────────────────────────────────────────────────
 
@@ -131,6 +143,7 @@
 # workaround here — it is the correct lifetime.
 - id: planning
   name: cordis:group
+  disabled: true
   group: true
   isolate:
     planMode: true
@@ -164,6 +177,7 @@
 # its agent compacts at all, which is `compaction-basic` below.
 - id: compaction
   name: cordis:group
+  disabled: true
   group: true
   isolate:
     compaction: true
@@ -201,6 +215,7 @@
 # `report` registered once per live session, which throws on the second.
 - id: delegation
   name: cordis:group
+  disabled: true
   group: true
   isolate:
     workflowEngine: true
@@ -265,9 +280,11 @@
 
 - id: tool-ask-user
   name: '@deepseek-ai/dsh-tool-ask-user'
+  disabled: true
 
 - id: tool-todo
   name: '@deepseek-ai/dsh-tool-todo'
+  disabled: true
   config:
     allowParallelInProgress: true
 
@@ -275,6 +292,7 @@
 # the model-facing tool is per-session.
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
+  disabled: true
   config:
     fetch: false
     searchTimeoutMs: 60000
