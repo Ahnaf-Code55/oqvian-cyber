@@ -70,6 +70,15 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    from rich.console import Console as _RichConsole
+    from rich.markdown import Markdown as _RichMarkdown
+    _RICH = True
+except Exception:
+    _RICH = False
+    _RichConsole = None
+    _RichMarkdown = None
+
+try:
     import websockets  # type: ignore
 except ImportError:
     print("Missing dependency: websockets (required by oqvian-code)", file=sys.stderr)
@@ -363,7 +372,36 @@ def set_model(port: int, session_id: str, provider: str, model: str,
     http_json(port, "session.selectModel", payload, timeout=20.0)
 
 
-def tool_summary(payload: object) -> tuple[str, str]:
+def tool_status(payload: object) -> tuple[bool, str]:
+    """Best-effort (ok, label) from a tool/result payload."""
+    if not isinstance(payload, dict):
+        return True, "done"
+    for key in ("exitCode", "exit_code", "returncode", "returnCode", "code"):
+        v = payload.get(key)
+        if isinstance(v, bool):
+            return v, ("ok" if v else "failed")
+        if isinstance(v, int):
+            return v == 0, (f"exit {v}" if v != 0 else "exit 0")
+    for key in ("status", "state", "result"):
+        v = payload.get(key)
+        if isinstance(v, str):
+            low = v.lower()
+            if low in ("ok", "success", "succeeded", "done", "completed",
+                       "passed", "exit 0"):
+                return True, (low if low != "exit 0" else "exit 0")
+            if low in ("error", "failed", "failure", "timeout", "cancelled"):
+                return False, low
+    if isinstance(payload.get("success"), bool):
+        return payload["success"], ("ok" if payload["success"] else "failed")
+    err = payload.get("error")
+    if isinstance(err, str) and err.strip():
+        return False, "error"
+    if isinstance(err, dict) and err:
+        return False, "error"
+    stderr = payload.get("stderr")
+    if isinstance(stderr, str) and stderr.strip():
+        return False, "stderr"
+    return True, "done"
     if not isinstance(payload, dict):
         return "tool", ""
     name = payload.get("name") or payload.get("toolName") or payload.get("tool") or "tool"
@@ -401,6 +439,7 @@ class TurnStats:
         self.tool_calls = 0
         self.tokens_out = 0
         self.thinking = 0
+        self.tool_result_chars = 0
 
 
 async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
@@ -413,6 +452,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
     stats = TurnStats()
     assistant_started = False
     thinking_started = False
+    tool_starts: list[float] = []
     spinner_idx = 0
     last_spinner = 0.0
     deadline = time.monotonic() + 4500
@@ -493,6 +533,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                     text_parts.append(delta)
             elif kind == "tool/call":
                 stats.tool_calls += 1
+                tool_starts.append(time.monotonic())
                 if not quiet:
                     name, args = tool_summary(data)
                     trunc = {"off": 300, "fast": 120, "ultra": 60}.get(effort, 300)
@@ -533,6 +574,7 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         if strs:
                             result_text = max(strs, key=lambda kv: len(kv[1]))[1]
                     if result_text:
+                        stats.tool_result_chars += len(result_text)
                         cap = 6000
                         if len(result_text) > cap:
                             shown = (result_text[:cap]
@@ -542,9 +584,14 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         for line in shown.splitlines():
                             sys.stdout.write(f"{DIM}  │ {line}{RESET}\n")
                         sys.stdout.flush()
-                    else:
-                        sys.stdout.write(f"{DIM}  ✓ done{RESET}\n")
-                        sys.stdout.flush()
+                    # status + timing line
+                    start_t = tool_starts.pop() if tool_starts else None
+                    dur = (time.monotonic() - start_t) if start_t else 0.0
+                    status, label = tool_status(data)
+                    glyph = "✓" if status else "✗"
+                    color = DIM if status else err
+                    sys.stdout.write(f"{color}  {glyph} {label} ({dur:.1f}s){RESET}\n")
+                    sys.stdout.flush()
             elif kind == "llm/retry":
                 if not quiet:
                     retry = data.get("retry", "?")
@@ -564,12 +611,15 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         sys.stdout.write("\n")
                     duration = time.monotonic() - stats.start
                     if ok_reason:
+                        ctx = stats.tokens_out + (stats.tool_result_chars // 4)
                         sys.stdout.write(dim(f"  ✓ done in {duration:.1f}s · "
-                                             f"{stats.tool_calls} tool calls · ~{stats.tokens_out} tok\n"))
+                                              f"{stats.tool_calls} tool calls · "
+                                              f"~{stats.tokens_out} tok out · "
+                                              f"ctx ~{ctx} tok\n"))
                     else:
                         sys.stdout.write(err(f"  ✗ turn ended: {reason.get('kind', 'error')}") + "\n")
                     sys.stdout.flush()
-                return ok_reason, "".join(text_parts)
+                return ok_reason, "".join(text_parts), stats
             else:
                 note_spinner()
 
@@ -622,6 +672,7 @@ def print_help() -> None:
   /review               ask the model to review + summarise current findings
   /resume               list previous sessions to resume
   /export [file]        export transcript (default: oqvian-transcript.md)
+  /render               re-render the last answer with markdown formatting
   /cost                 show this session's usage (tool calls, tokens est.)
   /models               list models (interactive picker)
   /model <id>           switch model (e.g. /model oqvian:latest)
@@ -655,17 +706,20 @@ Tips:
 
 class Session:
     def __init__(self, port: int, session_id: str, perm_mode: str, effort: str = "off",
-                 remote: dict | None = None):
+                 remote: dict | None = None, context_window: int = 65536):
         self.port = port
         self.session_id = session_id
         self.perm_mode = perm_mode  # auto | ask | plan
         self.effort = effort  # off | fast | ultra
         self.remote = remote  # None (local) or dict(userhost, tunnel_port, ...)
+        self.context_window = context_window
         self.transcript: list[str] = []
         self.stats = TurnStats()
         self.total_tools = 0
         self.total_tokens = 0
         self.total_turns = 0
+        self.context_chars = 0
+        self.last_answer = ""
 
     def log(self, who: str, text: str) -> None:
         self.transcript.append(f"[{who}] {text}")
@@ -699,11 +753,14 @@ class Session:
         envelope = json.loads(raw)
         if not envelope.get("result", {}).get("ok"):
             raise CliError(f"session.prompt rejected: {raw[:500]}")
-        ok_, text = asyncio.run(wait_for_turn(self.port, self.session_id,
+        ok_, text, turn_stats = asyncio.run(wait_for_turn(self.port, self.session_id,
                                               quiet=quiet, perm_mode=self.perm_mode,
                                               effort=self.effort))
         self.total_turns += 1
-        self.total_tools += 1  # per-turn tool count folded into stats below
+        self.total_tools += turn_stats.tool_calls
+        self.total_tokens += turn_stats.tokens_out
+        self.context_chars += len(full_text) + len(text) + turn_stats.tool_result_chars
+        self.last_answer = text
         self.log("assistant", text)
         return ok_, text
 
@@ -865,7 +922,7 @@ def main(argv: list[str] | None = None) -> int:
             except CliError:
                 pass
 
-        sess = Session(port, session_id, args.permission_mode, effort, remote)
+        sess = Session(port, session_id, args.permission_mode, effort, remote, context_window=(65536 if remote else 16384))
 
         # ── One-shot (-p) ──────────────────────────────────────────────── #
         if args.prompt:
@@ -921,7 +978,7 @@ def main(argv: list[str] | None = None) -> int:
                             "next steps) as a compact handoff note I can paste into a "
                             "fresh session.", quiet=True)
                         session_id = create_session(port, cwd)
-                        sess = Session(port, session_id, args.permission_mode, effort, remote)
+                        sess = Session(port, session_id, args.permission_mode, effort, remote, context_window=(65536 if remote else 16384))
                         sess.log("context", summary)
                         print(ok(f"compacted → new session {session_id}"))
                         print(dim(f"handoff note: {summary[:400]}…"))
@@ -956,11 +1013,21 @@ def main(argv: list[str] | None = None) -> int:
                     body.extend(sess.transcript)
                     path.write_text("\n".join(body))
                     print(ok(f"exported {len(sess.transcript)} messages → {path}"))
-                elif cmd == "/cost":
+                elif cmd == "/render":
+                    if not sess.last_answer:
+                        print(dim("  no answer to render yet"))
+                    elif _RICH:
+                        console = _RichConsole()
+                        console.print(_RichMarkdown(sess.last_answer))
+                    else:
+                        print(sess.last_answer)
+                    used = sess.context_chars // 4
+                    pct = (used / sess.context_window * 100) if sess.context_window else 0
                     print(f"session    {session_id}")
                     print(f"turns      {sess.total_turns}")
                     print(f"tool calls {sess.total_tools}")
-                    print(f"~tokens    {sess.total_tokens} (estimate)")
+                    print(f"~tokens    {sess.total_tokens} (assistant out, est.)")
+                    print(f"context    ~{used} / {sess.context_window} tokens ({pct:.1f}% used, est.)")
                     print(dim("local model — no API cost. Audit log: "
                               "~/.local/share/oqvian/audit.jsonl"))
                 elif cmd == "/models":
