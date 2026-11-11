@@ -122,10 +122,12 @@ REMOTE_KEY = Path.home() / ".ssh" / "oqvian_remote_ed25519"
 PROXY_PORT = 11435
 PROXY_UPSTREAM_FILE = Path("/tmp/oqvian-proxy.upstream")
 
+_BATCH = "When multiple independent tool calls are needed, batch them into a single turn instead of one per turn.\n"
+
 EFFORT_PREAMBLE = {
-    "off": "",
-    "fast": "[FAST MODE: use low reasoning effort. Keep every answer to 150 words or fewer, minimal prose, call tools immediately without long analysis.]\n",
-    "ultra": "[ULTRA MODE: use minimal reasoning effort. Keep every answer to 60 words or fewer, bullet points only, no analysis paragraphs, call tools immediately.] ",
+    "off": _BATCH,
+    "fast": "[FAST MODE: use low reasoning effort. Keep every answer to 150 words or fewer, minimal prose, call tools immediately without long analysis. " + _BATCH.rstrip() + "]\n",
+    "ultra": "[ULTRA MODE: use minimal reasoning effort. Keep every answer to 60 words or fewer, bullet points only, no analysis paragraphs, call tools immediately. " + _BATCH.rstrip() + "] ",
 }
 
 class CliError(RuntimeError):
