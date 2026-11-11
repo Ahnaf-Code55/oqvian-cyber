@@ -372,6 +372,22 @@ def set_model(port: int, session_id: str, provider: str, model: str,
     http_json(port, "session.selectModel", payload, timeout=20.0)
 
 
+def tool_summary(payload: object) -> tuple[str, str]:
+    if not isinstance(payload, dict):
+        return "tool", ""
+    name = payload.get("name") or payload.get("toolName") or payload.get("tool") or "tool"
+    args = payload.get("arguments") or payload.get("input") or {}
+    try:
+        arg_text = json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+        arg_text = str(args)
+    # pretty display: mcp__oqvian__X → X
+    short = name
+    if name.startswith("mcp__"):
+        short = name.replace("mcp__oqvian__", "oqvian:")
+    return short, arg_text
+
+
 def tool_status(payload: object) -> tuple[bool, str]:
     """Best-effort (ok, label) from a tool/result payload."""
     if not isinstance(payload, dict):
