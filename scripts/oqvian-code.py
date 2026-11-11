@@ -480,10 +480,12 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
         nonlocal assistant_started, thinking_started
         while True:
             try:
-                raw = await asyncio.wait_for(websocket.recv(),
-                                             timeout=max(0.0, deadline - time.monotonic()))
-            except TimeoutError:
-                raise CliError("timed out after 75 minutes waiting for the turn to end")
+                raw = await asyncio.wait_for(websocket.recv(), timeout=0.2)
+            except asyncio.TimeoutError:
+                if time.monotonic() >= deadline:
+                    raise CliError("timed out after 75 minutes waiting for the turn to end")
+                note_spinner()
+                continue
             try:
                 envelope = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
@@ -814,7 +816,8 @@ class Session:
         ok_, text, turn_stats = asyncio.run(wait_for_turn(self.port, self.session_id,
                                               quiet=quiet, perm_mode=self.perm_mode,
                                               effort=self.effort,
-                                              input_tokens_est=(len(full_text) + self.context_chars) // 4))
+                                              input_tokens_est=max(4000 if self.remote else 2000,
+                                                                  (len(full_text) + self.context_chars) // 4)))
         self.total_turns += 1
         self.total_tools += turn_stats.tool_calls
         self.total_tokens += turn_stats.tokens_out
