@@ -440,11 +440,13 @@ class TurnStats:
         self.tokens_out = 0
         self.thinking = 0
         self.tool_result_chars = 0
+        self._last_title = 0.0
 
 
 async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                         perm_mode: str = "auto", verbose: bool = False,
-                        on_ask=None, effort: str = "off"):
+                        on_ask=None, effort: str = "off",
+                        input_tokens_est: int = 0):
     """Consume the events.mux stream for one turn. Returns (ok, text, stats)."""
     uri = f"ws://127.0.0.1:{port}/api/events.mux"
     text_parts: list[str] = []
@@ -466,7 +468,8 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
         elapsed = int(now - stats.start)
         # overwrite current line with spinner (Claude Code style)
         sys.stdout.write(f"\r\033[K{DIM}{SPINNER[spinner_idx % len(SPINNER)]} Working… ({elapsed}s)"
-                         f" · {stats.tool_calls} tool calls{RESET}")
+                         f" · {stats.tool_calls} tool calls"
+                         f" · ~{input_tokens_est} in · ~{stats.tokens_out} out{RESET}")
         sys.stdout.flush()
         spinner_idx += 1
 
@@ -530,6 +533,12 @@ async def wait_for_turn(port: int, session_id: str, *, quiet: bool = False,
                             assistant_started = True
                         sys.stdout.write(delta)
                         sys.stdout.flush()
+                        # Live token counter in the terminal title (non-intrusive).
+                        now = time.monotonic()
+                        if now - getattr(stats, "_last_title", stats.start) >= 0.3:
+                            stats._last_title = now
+                            sys.stderr.write(f"\033]0;OQVIAN · ~{stats.tokens_out} tok\007")
+                            sys.stderr.flush()
                     text_parts.append(delta)
             elif kind == "tool/call":
                 stats.tool_calls += 1
@@ -755,7 +764,8 @@ class Session:
             raise CliError(f"session.prompt rejected: {raw[:500]}")
         ok_, text, turn_stats = asyncio.run(wait_for_turn(self.port, self.session_id,
                                               quiet=quiet, perm_mode=self.perm_mode,
-                                              effort=self.effort))
+                                              effort=self.effort,
+                                              input_tokens_est=(len(full_text) + self.context_chars) // 4))
         self.total_turns += 1
         self.total_tools += turn_stats.tool_calls
         self.total_tokens += turn_stats.tokens_out
